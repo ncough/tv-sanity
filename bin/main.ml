@@ -5,7 +5,7 @@ open Tv_sanity.Solver_pipeline
 open Tv_sanity.Utilities
 
 (** Parse and process a single SMT-LIB2 file with main pipeline *)
-let process_file filename timeout_ms =
+let process_file filename timeout_ms optimise_effects =
   try
     let state = parse_file filename in
     let base_filename = Filename.remove_extension filename in
@@ -13,7 +13,7 @@ let process_file filename timeout_ms =
     (* Create debug directory if in debug mode *)
     (if is_debug_enabled () then ignore (create_debug_directory (Filename.basename base_filename)));
 
-    let _ = optimize_with_z3_tactics state timeout_ms base_filename in
+    let _ = optimize_with_z3_tactics state timeout_ms optimise_effects base_filename in
     true
   with
   | exn ->
@@ -26,12 +26,15 @@ let () =
   (* Command line argument variables *)
   let timeout_ms = ref 30000 in  (* Default 30 second timeout *)
   let input_files = ref [] in
+  let effect_optimiser = ref true in
 
   (* Argument specification *)
   let spec = [
     ("--debug", Arg.Unit (fun () -> set_debug_mode true),
      " Enable debug mode with debug directory creation");
-    ("--timeout", Arg.Int (fun t -> timeout_ms := t),
+    ("--no-effect", Arg.Clear effect_optimiser,
+     "disable effect optimiser");
+    ("--timeout", Arg.Set_int timeout_ms,
      "<timeout_ms> Timeout in milliseconds for solver operations (default: 30000)");
   ] in
 
@@ -50,7 +53,7 @@ let () =
       Arg.usage spec usage_msg;
       exit 1
   | [filename] ->
-      if process_file filename !timeout_ms then exit 0 else exit 1
+      if process_file filename !timeout_ms !effect_optimiser then exit 0 else exit 1
   | _ ->
       Printf.printf "Error: Too many input files specified\n";
       Arg.usage spec usage_msg;

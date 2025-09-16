@@ -457,9 +457,9 @@ let process_program program state =
   (program,effs)
 
 let order_effects effects effs =
-  List.map (fun effect ->
-    match StringMap.find_opt effect.qname effs with
-    | Some (preds,source,target) -> { effect with preds ; source_location = Some source ; target_location = Some target }
+  List.map (fun ef ->
+    match StringMap.find_opt ef.qname effs with
+    | Some (preds,source,target) -> { ef with preds ; source_location = Some source ; target_location = Some target }
     | None -> failwith "missing effect")  effects
 
 let join_effs a b =
