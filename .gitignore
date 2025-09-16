@@ -1,0 +1,45 @@
+# OCaml build artifacts
+_build/
+*.cmi
+*.cmo
+*.cmx
+*.cmxa
+*.cma
+*.cmt
+*.cmti
+*.o
+*.a
+*.so
+*.dll
+*.exe
+*.byte
+*.native
+*.prof
+*.s
+*.mli.depends
+*.ml.depends
+*.dune-deps
+*.merlin
+
+# dune specific
+.merlin
+.merlin-exists
+dune-project.local
+dune-workspace.local
+
+# opam specific
+_opam/
+opam-init/
+opam-switch/
+opam-state/
+*.install
+*.config
+*.log
+
+# OS specific files
+.DS_Store
+Thumbs.db
+
+# Other common temporary files
+*.tmp
+*.bak
