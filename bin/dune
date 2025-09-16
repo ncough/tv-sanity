@@ -1,0 +1,4 @@
+(executable
+ (public_name tv-sanity)
+ (name main)
+ (libraries tv_sanity))
