@@ -113,7 +113,7 @@ let inject_synth_pc_disjunctions_in_state state =
 
 (** Main function for Z3 tactic + CVC5 workflow *)
 let optimize_with_z3_tactics state timeout_ms optimise_effects base_filename =
-  let cvc_time = 30000 in
+  let cvc_time = timeout_ms in
   debug_printf "Starting Effect Optimization...\n";
   let (state,time) = if optimise_effects then 
     get_time (fun () -> Effect_optimizer.optimize_queries_to_fixpoint state timeout_ms base_filename)
