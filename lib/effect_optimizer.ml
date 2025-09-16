@@ -14,8 +14,9 @@ type solver_process = {
 
 (** Start incremental CVC5 solver process *)
 let start_incremental_solver base_filename =
+  let env = Unix.environment () in
   Sys.set_signal Sys.sigpipe Sys.Signal_ignore;
-  let (proc_in, proc_out, proc_err) = Unix.open_process_full cvc5_path [||] in
+  let (proc_in, proc_out, proc_err) = Unix.open_process_full cvc5_path (env) in
   let debug_log =
     if is_debug_enabled () then
       let debug_filename = get_debug_file_path (Filename.basename base_filename ^ "_cvc5_debug.smt2") in

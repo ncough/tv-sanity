@@ -184,7 +184,8 @@ let with_temp_file prefix suffix f =
 (** Run external command and capture output *)
 let run_command cmd =
   debug_printf "  Running command: %s\n" cmd;
-  let ic = Unix.open_process_in cmd in
+  let env = Unix.environment () in
+  let (ic,oc,ec) = Unix.open_process_full cmd env in
   let buffer = Buffer.create 8192 in
   (try
     while true do
@@ -194,5 +195,5 @@ let run_command cmd =
     done
   with End_of_file -> ());
   let output = Buffer.contents buffer in
-  let exit_status = Unix.close_process_in ic in
+  let exit_status = Unix.close_process_full (ic,oc,ec) in
   (exit_status, output)
