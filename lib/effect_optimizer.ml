@@ -55,44 +55,60 @@ let scoped_solve solver_process query =
   send_to_solver solver_process "(pop)\n";
   result
 
-(** Generate incremental SMT-LIB base content *)
+(** Generate incremental SMT-LIB base content with Z3 simplification *)
 let generate_incremental_base_smtlib state timeout_ms =
-  let buffer = Buffer.create 4096 in
-
-  (* Enable incremental mode *)
-  if timeout_ms >= 0 then
-    Buffer.add_string buffer (Printf.sprintf "(set-option :tlimit-per %d)\n" timeout_ms);
-  Buffer.add_string buffer "(set-option :incremental true)\n";
-  Buffer.add_string buffer generate_smtlib_header;
-
-  (* Add variable declarations for both programs *)
-  Buffer.add_string buffer (generate_variable_declarations state.source);
-  Buffer.add_string buffer (generate_variable_declarations state.target);
+  (* Create base content for Z3 simplification (without declarations) *)
+  let base_buffer = Buffer.create 4096 in
 
   (* Add block assertions for both programs *)
-  Buffer.add_string buffer (generate_block_assertions state.source "source");
-  Buffer.add_string buffer (generate_block_assertions state.target "target");
+  Buffer.add_string base_buffer (generate_block_assertions state.source "source");
+  Buffer.add_string base_buffer (generate_block_assertions state.target "target");
 
   (* Add assignment assertions *)
-  Buffer.add_string buffer (generate_assignment_assertions state.source);
-  Buffer.add_string buffer (generate_assignment_assertions state.target);
+  Buffer.add_string base_buffer (generate_assignment_assertions state.source);
+  Buffer.add_string base_buffer (generate_assignment_assertions state.target);
 
   (* Add ONLY initial invariants *)
-  Buffer.add_string buffer (generate_initial_assertions state.initial);
+  Buffer.add_string base_buffer (generate_initial_assertions state.initial);
 
   (* Add all trivial queries (those without reqs) *)
   let trivial_queries = List.filter (fun q -> q.req = []) state.effects in
   List.iter (fun query ->
     if query.ens <> [] then begin
       let query_assertion = generate_effect_query_assertion query in
-      Buffer.add_string buffer query_assertion
+      Buffer.add_string base_buffer query_assertion
     end
   ) trivial_queries;
 
   (* Add arbitrary assertions *)
-  Buffer.add_string buffer (generate_arbitrary_assertions state);
+  Buffer.add_string base_buffer (generate_arbitrary_assertions state);
 
-  Buffer.contents buffer
+  let base_content = Buffer.contents base_buffer in
+
+  (* Apply Z3 simplification using the existing tactic infrastructure *)
+  let tactic = "(apply (repeat (then simplify)))" in
+  let z3_result = Z3_solver.apply_tactic state tactic base_content in
+
+  match z3_result with
+  | UNKNOWN [simplified_goal] ->
+      (* Create final incremental content with declarations and simplified goal *)
+      let final_buffer = Buffer.create 4096 in
+
+      (* Enable incremental mode *)
+      if timeout_ms >= 0 then
+        Buffer.add_string final_buffer (Printf.sprintf "(set-option :tlimit-per %d)\n" timeout_ms);
+      Buffer.add_string final_buffer "(set-option :incremental true)\n";
+      Buffer.add_string final_buffer generate_smtlib_header;
+
+      (* Add variable declarations for both programs *)
+      Buffer.add_string final_buffer (generate_variable_declarations state.source);
+      Buffer.add_string final_buffer (generate_variable_declarations state.target);
+
+      (* Add the simplified goal *)
+      Buffer.add_string final_buffer simplified_goal;
+
+      Buffer.contents final_buffer
+  | _ -> unreachable ()
 
 (** Query result with timing *)
 type 'a query_result =

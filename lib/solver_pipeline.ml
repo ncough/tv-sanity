@@ -113,7 +113,6 @@ let inject_synth_pc_disjunctions_in_state state =
 
 (** Main function for Z3 tactic + CVC5 workflow *)
 let optimize_with_z3_tactics state timeout_ms base_filename =
-  let cvc_time = 30000 in
   debug_printf "Starting Effect Optimization...\n";
   let (state,time) = get_time (fun () -> Effect_optimizer.optimize_queries_to_fixpoint state timeout_ms base_filename) in
   debug_printf "Finished Effect Optimization in %.2fms\n" time;
@@ -121,13 +120,13 @@ let optimize_with_z3_tactics state timeout_ms base_filename =
   let (split,time) = get_time (fun () ->
     let state = inject_synth_pc_disjunctions_in_state state in
     let initial = make_initial_goal state in
-    let tactic = "(apply (then split-clause split-clause (repeat (then euf-completion simplify))))" in
+    let tactic = "(apply (then split-clause split-clause simplify))" in
     bind initial (Z3_solver.apply_tactic state tactic))
   in
   debug_printf "Finished Simplification and Splitting to %d goals in %.2fms\n" (complexity split) time;
   debug_printf "Starting Solving...\n";
   let final = bind split (fun query ->
-    let (res,time) = get_time (fun _ -> Cvc5_solver.check_sat state cvc_time query) in
+    let (res,time) = get_time (fun _ -> Cvc5_solver.check_sat state timeout_ms query) in
     debug_printf "  %s in %.2fms\n" (print_result res) time;
     res
   ) in

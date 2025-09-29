@@ -43,3 +43,5 @@ Thumbs.db
 # Other common temporary files
 *.tmp
 *.bak
+
+*.smt2
