@@ -4,6 +4,16 @@ open Data_structures
 open Utilities
 open Smtlib_output
 
+(* TODO:
+  - Move the incremental solver logic into a new file 
+    - Have the scoped solve return the solver_result ADT 
+    - Have it log errors that don't match this structure
+    - Make the solver_result poly in the UNKNOWN value
+  - Simplify results update by failing if there is an existing value, just store the value otherwise
+
+
+*)
+
 (** Solver process management *)
 type solver_process = {
   stdin: out_channel;
@@ -13,13 +23,13 @@ type solver_process = {
 }
 
 (** Start incremental CVC5 solver process *)
-let start_incremental_solver base_filename =
+let start_incremental_solver () =
   let env = Unix.environment () in
   Sys.set_signal Sys.sigpipe Sys.Signal_ignore;
   let (proc_in, proc_out, proc_err) = Unix.open_process_full cvc5_path (env) in
   let debug_log =
     if is_debug_enabled () then
-      let debug_filename = get_debug_file_path (Filename.basename base_filename ^ "_cvc5_debug.smt2") in
+      let debug_filename = get_debug_file_path "incr_cvc5_debug.smt2" in
       Some (open_out debug_filename)
     else
       None
@@ -47,13 +57,23 @@ let close_solver solver =
   close_out solver.stdin;
   ignore (Unix.close_process_full (solver.stdout, solver.stdin, solver.stderr))
 
-let scoped_solve solver_process query =
+let scoped_solve ?cmt solver_process query =
+  ignore (Option.map (fun s ->
+    send_to_solver solver_process "; ";
+    send_to_solver solver_process s;
+    send_to_solver solver_process "\n") cmt);
   send_to_solver solver_process "(push)\n";
   send_to_solver solver_process query;
   send_to_solver solver_process "(check-sat)\n";
   let result = read_solver_response solver_process in
   send_to_solver solver_process "(pop)\n";
   result
+
+
+
+(* ABOVE IS INCREMENTAL, MOVE TO FILE *)
+
+
 
 (** Generate incremental SMT-LIB base content with Z3 simplification *)
 let generate_incremental_base_smtlib state timeout_ms =
@@ -88,6 +108,7 @@ let generate_incremental_base_smtlib state timeout_ms =
   (* Apply Z3 simplification using the existing tactic infrastructure *)
   let tactic = "(apply (repeat (then simplify)))" in
   let z3_result = Z3_solver.apply_tactic state tactic base_content in
+  (*let z3_result = UNKNOWN [base_content] in*)
 
   match z3_result with
   | UNKNOWN [simplified_goal] ->
@@ -119,8 +140,6 @@ type 'a query_result =
 (** Results map with timing *)
 type results_map = float query_result StringMap.t
 
-let empty_results_map = StringMap.empty
-
 (** Lattice join operation - higher precedence wins, min timing within same result *)
 let join_results old_result new_result =
   match old_result, new_result with
@@ -142,10 +161,10 @@ let generate_query_reachability query =
   let target = Option.get query.target_location in
   Printf.sprintf "(and %s %s)" source target
 
-let test_effect solver_process query complete =
-  let req_combined = generate_conjunction query.req in
-  let ens_combined = generate_conjunction query.ens in
-  let reachable = generate_query_reachability query in
+let test_effect solver eff =
+  let req_combined = generate_conjunction eff.req in
+  let ens_combined = generate_conjunction eff.ens in
+  let reachable = generate_query_reachability eff in
 
   (* The flow is:
     - Are the blocks that perform these calls mutually reachable?
@@ -157,70 +176,117 @@ let test_effect solver_process query complete =
     In reality the injected conditions need to be guarded by reachability,
     though I don't believe the existing transforms can induce the problematic case here.
   *)
-  let reach = scoped_solve solver_process (Printf.sprintf "(assert %s)\n" reachable) in
-  let result = if reach = "unsat" then "sat" else begin
+  let cmt = Printf.sprintf "Reach %s" eff.qname in
+  let reach = scoped_solve ~cmt solver (Printf.sprintf "(assert %s)\n" reachable) in
+  let result = if reach = "unsat" then "unreach" else begin
     let cond = Printf.sprintf "(assert %s)\n(assert (not %s))\n" reachable req_combined in
-    scoped_solve solver_process cond
+    let cmt = Printf.sprintf "Solve %s" eff.qname in
+    scoped_solve ~cmt solver cond
   end in
 
   match result with
   | "unsat" ->
-      send_to_solver solver_process (Printf.sprintf "(assert %s)\n" req_combined);
-      send_to_solver solver_process (Printf.sprintf "(assert %s)\n" ens_combined);
-      UNSAT  { query with req = [] ; ens = (query.req @ query.ens) }
-  | "sat" when complete -> SAT (query)
-  | "sat" -> UNKNOWN (query)
-  | "unknown" -> UNKNOWN (query)
+      debug_printf "UNSAT";
+      send_to_solver solver (Printf.sprintf "(assert %s)\n" req_combined);
+      send_to_solver solver (Printf.sprintf "(assert %s)\n" ens_combined);
+      UNSAT  { eff with req = [] ; ens = (eff.req @ eff.ens) }
+  | "sat" ->
+      debug_printf "SAT  ";
+      SAT (eff)
+  | "unreach" ->
+      debug_printf "UNRCH";
+      SAT (eff)
+  | "unknown" ->
+      debug_printf "UNKNW";
+      UNKNOWN (eff)
   | error_msg ->
-      debug_printf "ERROR: Solver issue: %s\n" error_msg;
-      UNKNOWN (query)
+      Printf.printf "Effect Optimisation Error: %s" error_msg;
+      UNKNOWN (eff)
 
-(** Optimize queries using incremental solver and topological query traversal *)
-let optimize_queries_incremental state timeout_ms base_filename =
-  let solver = start_incremental_solver base_filename in
-  send_to_solver solver (generate_incremental_base_smtlib state timeout_ms);
+(** An effect is considered 'solvable' given:
+    - All of its predecessors have been processed (results of UNSAT or SAT)
+    - At least on of its predecessors has been successfully solved (result of UNSAT)
+  *)
+let solvable_effect (eff : query) results =
+  let (unsat,unknown) = StringSet.fold (fun name (unsat,unknown) ->
+    if name = "entry" then (unsat+1,unknown) else
+      match StringMap.find name results with
+      | UNSAT _ -> (unsat+1,unknown)
+      | SAT _ -> (unsat,unknown)
+      | UNKNOWN _ -> (unsat,unknown+1)) eff.preds (0,0) in
+  unsat > 0 && unknown = 0
 
+(** Solve conditions on effects by processing their conditions in topological order using an
+    incremental SMT solver. *)
+let solve_effects solver effects =
   (* Get topological order of queries based on their predecessors *)
-  let queries = Data_structures.query_topo_sort state.effects in
-  debug_printf "  Processing %d queries\n" (List.length queries);
+  let topo_effects = Data_structures.query_topo_sort effects in
 
-  (* Filter out trivial queries first *)
-  let (trivial, non_trivial) = List.partition (fun q -> q.req = []) queries in
+  (* Filter out trivial queries *)
+  let (trivial, non_trivial) = List.partition (fun q -> q.req = []) topo_effects in
+  let results = List.fold_right
+    (fun eff -> StringMap.add eff.qname (UNSAT 0.0)) trivial StringMap.empty in
 
-  let (solved, unsolved, results_map, _, _) = List.fold_left (
-    fun (solved, unsolved, results_map, pos, solver) query ->
-      let (outcome,elapsed_ms) = get_time (fun _ -> test_effect solver query (unsolved = [])) in
-      match outcome with
-      | UNSAT query ->
-          debug_printf "  [%d] UNSAT in %fms: %s\n" pos elapsed_ms query.qname;
-          let updated_results_map = update_results_map results_map query.qname (UNSAT elapsed_ms) in
-          (query :: solved, unsolved, updated_results_map, pos+1, solver)
+  debug_printf "  Processing %d effects\n" (List.length non_trivial);
+
+  let (solved, unsolved, results, _) = List.fold_left (
+    fun (solved, unsolved, results, pos) eff ->
+      let name = eff.qname in
+      debug_printf "  [%d] " pos;
+      let (outcome,elapsed_ms) = get_time (fun _ ->
+        if solvable_effect eff results then test_effect solver eff else begin
+          debug_printf "UNSOV";
+          UNKNOWN eff
+        end
+      ) in
+      debug_printf " in %.2fms: %s\n" elapsed_ms name;
+      let (solved,unsolved,results) = (match outcome with
+      | UNSAT eff ->
+          (eff :: solved, unsolved, update_results_map results name (UNSAT elapsed_ms))
       | SAT _ ->
-          debug_printf "  [%d] SAT   in %fms: %s\n" pos elapsed_ms query.qname;
-          let updated_results_map = update_results_map results_map query.qname (SAT elapsed_ms) in
-          (solved, unsolved, updated_results_map, pos+1, solver)
+          (solved, unsolved, update_results_map results name (SAT elapsed_ms))
       | UNKNOWN _ ->
-          debug_printf "  [%d] UNKNW in %fms: %s\n" pos elapsed_ms query.qname;
-          let updated_results_map = update_results_map results_map query.qname (UNKNOWN elapsed_ms) in
-          (solved, query :: unsolved, updated_results_map, pos+1, solver))
-      ([], [], empty_results_map, 0, solver) non_trivial
+          (solved, eff :: unsolved, update_results_map results name (UNKNOWN elapsed_ms))) in
+      (solved,unsolved,results,pos+1)
+    ) ([], [], results, 0) non_trivial
   in
 
   (* Combine results: trivial queries + solved + unsolved *)
-  let effects = trivial @ solved @ List.rev unsolved in
-  let removed_count = List.length queries - List.length effects in
+  let reduced_effects = trivial @ solved @ List.rev unsolved in
+  let removed_count = List.length effects - List.length reduced_effects in
   let validated_count = List.length solved in
 
-  debug_printf "  %d -> %d non-trivial queries (removed: %d, validated: %d)\n"
+  debug_printf "  %d -> %d non-trivial effects (removed: %d, validated: %d)\n"
     (List.length non_trivial)
     (List.length unsolved)
     removed_count
     validated_count;
 
-  close_solver solver;
-
   (* Return state with results data *)
-  ({ state with effects}, results_map)
+  (reduced_effects, results)
+
+let solve_goals solver goals =
+  debug_printf "  Attempting to solve %d goals\n" (List.length goals);
+  let (result,_) = List.fold_left (
+    fun (acc,pos) goal ->
+      match acc with
+      | UNKNOWN prev ->
+          let cond = Printf.sprintf "(assert (not %s))\n" (pp_sexp goal.term) in
+          let res = scoped_solve ~cmt:"final" solver cond in
+          debug_printf "  [%d] %s\n" pos res;
+          let acc = (match res with
+          | "unsat" -> acc
+          | "sat" -> SAT [goal]
+          | _ -> UNKNOWN (goal::prev)) in
+          (acc,pos+1)
+      | _ -> 
+          debug_printf "  [%d] skip\n" pos;
+          (acc,pos+1)
+    ) (UNKNOWN [],0) goals
+  in
+  match result with
+  | UNKNOWN [] -> UNSAT []
+  | _ -> result
 
 (** Generate GraphViz DOT for query dependencies with results and timing *)
 let generate_query_dependency_dot queries results_map =
@@ -310,18 +376,25 @@ let generate_query_dependency_dot queries results_map =
   Buffer.contents buffer
 
 (** Main entry point for query optimization *)
-let optimize_queries_to_fixpoint state timeout_ms base_filename =
-  (* Run optimization and collect results *)
-  let (state_out, results_map) = optimize_queries_incremental state timeout_ms base_filename in
+let run state timeout_ms =
+  let solver = start_incremental_solver () in
+  send_to_solver solver (generate_incremental_base_smtlib state timeout_ms);
+
+  (* Run solver over the effects *)
+  let (effects, results_map) = solve_effects solver state.effects in
 
   (* Generate query dependency visualization with results and timing *)
   if is_debug_enabled () then begin
     let dot_content = generate_query_dependency_dot state.effects results_map in
-    let dot_filename = get_debug_file_path (Filename.basename base_filename ^ "_query_dependencies.dot") in
+    let dot_filename = get_debug_file_path "query_dependencies.dot" in
     let dot_file = open_out dot_filename in
     output_string dot_file dot_content;
     close_out dot_file;
     debug_printf "  Query dependency graph written to %s\n" dot_filename
   end;
 
-  state_out
+  (* Run solver over the goals *)
+  match solve_goals solver state.final with
+  | UNSAT _ -> UNSAT {state with effects ; final = []}
+  | SAT _ -> SAT state
+  | UNKNOWN final -> UNKNOWN {state with effects ; final }

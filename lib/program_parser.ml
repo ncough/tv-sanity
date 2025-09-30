@@ -242,6 +242,30 @@ let parse_assertion state assertion name =
       debug_printf "WARNING: Arbitary Named Assert: %s %s\n" name (pp_sexp e);
       { state with arbitrary = build_predicate e :: state.arbitrary }
 
+let rec leading_implies = function
+  | List [Atom "=>"; cond; goal] ->
+      let (conds,goal) = leading_implies goal in
+      (cond::conds,goal)
+  | List [Atom "or"; cond; goal] ->
+      let (conds,goal) = leading_implies goal in
+      ((List [Atom "not";cond])::conds,goal)
+  | g -> ([],g)
+
+let rec collase_conj = function
+  | List (Atom "and"::conds) ->
+      List.flatten (List.map collase_conj conds)
+  | g -> [g]
+
+let process_goal state goal =
+  assert (state.final = []);
+  let (conds,goal) = leading_implies goal in
+  let goals = collase_conj goal in
+  let state = List.fold_left (fun state cond ->
+    debug_printf "WARNING: Elevating Goal Condition to Assert: %s\n" (pp_sexp cond);
+    { state with arbitrary = build_predicate cond :: state.arbitrary }) state conds in
+  let final = List.map build_predicate goals in
+  { state with final }
+
 (** Parse a single S-expression and update parser state *)
 let parse_sexp state sexp =
   match sexp with
@@ -253,8 +277,7 @@ let parse_sexp state sexp =
   (* Final assertions: (assert (! (not a) :named InvPrimed)) *)
   | List [Atom "assert"; List [Atom "!"; List [Atom "not"; req]; Atom ":named"; Atom name]]
       when String.starts_with ~prefix:"InvPrimed" name ->
-        let query = build_predicate req in
-        { state with final = query :: state.final }
+        process_goal state req
   (* Query requirements and ensures: (assert (! (=> req ens) :named ackermann...)) *)
   | List [Atom "assert"; List [Atom "!"; List [Atom "=>"; req; ens]; Atom ":named"; Atom name]]
       when String.starts_with ~prefix:"ackermann" name ->

@@ -13,7 +13,7 @@ let process_file filename timeout_ms =
     (* Create debug directory if in debug mode *)
     (if is_debug_enabled () then ignore (create_debug_directory (Filename.basename base_filename)));
 
-    let _ = optimize_with_z3_tactics state timeout_ms base_filename in
+    let _ = optimize_with_z3_tactics state timeout_ms in
     true
   with
   | exn ->

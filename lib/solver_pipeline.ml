@@ -112,9 +112,15 @@ let inject_synth_pc_disjunctions_in_state state =
   { state with arbitrary = state.arbitrary @ [initial_vars;final_vars] }
 
 (** Main function for Z3 tactic + CVC5 workflow *)
-let optimize_with_z3_tactics state timeout_ms base_filename =
+let optimize_with_z3_tactics state timeout_ms =
   debug_printf "Starting Effect Optimization...\n";
-  let (state,time) = get_time (fun () -> Effect_optimizer.optimize_queries_to_fixpoint state timeout_ms base_filename) in
+
+  let (state,time) = get_time (fun () -> Effect_optimizer.run state timeout_ms) in
+  match state with
+  | Effect_optimizer.UNSAT state -> Printf.printf "unsat\n"; state
+  | Effect_optimizer.SAT state -> Printf.printf "sat\n"; state
+  | Effect_optimizer.UNKNOWN state ->
+
   debug_printf "Finished Effect Optimization in %.2fms\n" time;
   debug_printf "Starting Simplification...\n";
   let (split,time) = get_time (fun () ->
@@ -134,6 +140,3 @@ let optimize_with_z3_tactics state timeout_ms base_filename =
   Printf.printf "%s\n" (print_result final);
   state
 
-(** Simple query optimization entry point *)
-let optimize_queries state timeout_ms base_filename =
-  Effect_optimizer.optimize_queries_to_fixpoint state timeout_ms base_filename
