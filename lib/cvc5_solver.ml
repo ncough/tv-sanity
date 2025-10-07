@@ -3,13 +3,6 @@
 open Utilities
 open Smtlib_output
 
-(** Analyze CVC5 output and determine result *)
-let analyze_cvc5_output output =
-  match String.trim output with
-  | "sat" -> SAT
-  | "unsat" -> UNSAT
-  | _ -> UNKNOWN [String.trim output]
-
 (** Apply CVC5 tactic to a goal with state context *)
 let apply_tactic state timeout tactic goal =
   with_temp_file "cvc5_tactic" ".smt2" (fun temp_file ->
@@ -21,9 +14,16 @@ let apply_tactic state timeout tactic goal =
     let cvc5_cmd = Printf.sprintf "%s --tlimit %d %s" cvc5_path timeout temp_file in
     let (exit_status, output) = run_command cvc5_cmd in
 
-    match exit_status with
-    | Unix.WEXITED 0 -> analyze_cvc5_output output
-    | _ -> UNKNOWN [goal]
+    match exit_status, String.trim output with
+    | Unix.WEXITED 0, "sat" -> SOLVED
+    | Unix.WEXITED 0, "unsat" -> UNSOLVED []
+    | Unix.WEXITED 0, _ -> UNSOLVED [goal]
+    | _, "cvc5 interrupted by timeout." ->
+        (* CVC5 timeout - treat as unsolved *)
+        UNSOLVED [goal]
+    | _ ->
+        Printf.printf "CVC5 Error: %s\n" output;
+        UNSOLVED [goal]
   )
 
 (** Simple CVC5 satisfiability check *)

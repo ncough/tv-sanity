@@ -8,6 +8,8 @@ module StringSet = Set.Make(String)
 let cvc5_path = "cvc5"
 let z3_path = "z3"
 
+let set_of_map a = a |> StringMap.to_seq |> Seq.map fst |> StringSet.of_seq
+
 let unreachable () = failwith "unreachable"
 
 (** Check if a string represents a program variable (has source__/target__ prefix) *)
@@ -154,10 +156,45 @@ let get_debug_file_path filename =
   | None -> filename  (* fallback to current directory if no debug dir *)
 
 (** Solver result type *)
-type solver_result =
-  | UNSAT
-  | SAT
-  | UNKNOWN of string list
+type 'a result =
+  | SOLVED
+  | UNSOLVED of 'a list
+
+let pp_result = function
+  | SOLVED -> "sat"
+  | UNSOLVED [] -> "unsat"
+  | UNSOLVED _ -> "unknown"
+
+let result_map f = function
+  | SOLVED -> SOLVED
+  | UNSOLVED l -> UNSOLVED (List.map f l)
+
+let result_bind = fun res f ->
+  match res with
+  | SOLVED -> SOLVED
+  | UNSOLVED l -> 
+      List.fold_left (fun acc v ->
+        match acc with
+        | SOLVED -> SOLVED
+        | UNSOLVED l1 -> 
+            match f v with
+            | SOLVED -> SOLVED
+            | UNSOLVED l2 -> UNSOLVED (l1 @ l2)) (UNSOLVED []) l
+
+let (let@) = result_bind
+
+let result_size = function
+  | UNSOLVED l -> List.length l
+  | _ -> 0
+
+let wrap name fn =
+  debug_printf "Starting %s\n" name;
+  let start_time = Unix.gettimeofday () in
+  let res = fn () in
+  let end_time = Unix.gettimeofday () in
+  let elapsed_ms = (end_time -. start_time) *. 1000.0 in
+  debug_printf "Finished %s, %d goals remaining, in %.2fms\n" name (result_size res) elapsed_ms;
+  res
 
 (** Temporary file management with automatic cleanup *)
 let with_temp_file prefix suffix f =

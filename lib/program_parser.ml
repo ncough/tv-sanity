@@ -201,6 +201,28 @@ let parse_phis expr =
       Some(v,(blocks,expr)::(List.map (fun (_,b,e) -> (b,e)) ls))
   | _ -> None
 
+let rec parse_ite = function
+  | List [Atom "ite"; blocks; Atom var; rest] when is_var var ->
+      (match all_some (List.map get_atom (parse_disj blocks)), parse_ite rest with
+      | Some blocks, Some (phis,def) -> Some((Atom var,blocks)::phis,def)
+      | _ -> None)
+  | Atom var when is_var var ->
+      Some ([],Atom var)
+  | _ -> None
+
+let process_ite state var (phis,def) =
+  update_last_block state (fun block ->
+    let included = List.flatten (List.map snd phis) in
+    let missing_preds = StringSet.diff (StringSet.of_list block.preds) (StringSet.of_list included) in
+    let def_blocks = StringSet.elements missing_preds in
+    let phis = phis @ [(def,def_blocks)] in
+    let flat = List.flatten (List.map (fun (a,blocks) -> List.map (fun b -> (b,a)) blocks) phis) in
+    let updated_phis = StringMap.update var (function
+      | None -> Some flat
+      | Some _ -> failwith "huh"
+    ) block.phis in
+    { block with phis = updated_phis })
+
 (** Process phi node definitions *)
 let process_phis state var phis =
   update_last_block state (fun block ->
@@ -225,6 +247,11 @@ let parse_assertion state assertion name =
           if is_exit_block var then process_exit_block st var else st
       | None ->
           failwith ("Invalid predecessor expression " ^ var ^ ": " ^ pp_sexp pred_expr))
+  (* Phi nodes: (= var (ite block_var ...) *)
+  | List [Atom "="; Atom var; List (Atom "ite" :: _) as expr] when is_var var && Option.is_some (parse_ite expr) ->
+      (match parse_ite expr with
+      | Some phis -> process_ite state var phis
+      | None -> unreachable ())
   (* Variable declarations within blocks *)
   | expr when Option.is_some (parse_assignments expr) ->
       (match parse_assignments expr with
@@ -373,7 +400,6 @@ let solve_definitions program floating =
       let incoming = if block_name = get_entry program then [StringSet.singleton "entry"] else incoming in
       let preds = List.fold_left StringSet.union StringSet.empty incoming in
 
-
       let (defs,prefix,floating,preds,effs) =
         if block_name <> get_entry program then repeat_floating defs floating preds effs block_name
         else (defs,[],floating,preds,effs) in
@@ -397,6 +423,11 @@ let solve_definitions program floating =
         ) ([], defs, floating, undefined, preds, effs) block.ops
       in
       let (defs,suffix,floating,preds,effs) = repeat_floating defs floating preds effs block_name in
+
+      (* Store exit predecessors in effs map when processing exit block *)
+      let effs =
+        if block_name = get_exit program then StringMap.add "exit" (preds, block_name) effs else effs
+      in
 
       (* Update the block with processed operations *)
       let ops = prefix @ ops @ suffix in
@@ -424,7 +455,7 @@ let create_entry_operation (program : program) initial =
   let fvsl = List.map (fun pred -> free_vars pred.term) initial in
   let fvs = List.fold_left StringSet.union StringSet.empty fvsl in
   let fvs = StringSet.filter (fun v -> String.starts_with ~prefix:program.name v) fvs in
-  let call = Call { vars = fvs; name = "entry"; args = StringSet.empty; queries = StringSet.empty } in
+  let call = Call { vars = fvs; name = "entry"; args = StringSet.empty; queries = StringSet.singleton "entry" } in
   update_block program (get_entry program) (fun block -> {block with ops = call :: block.ops})
 
 let add_entry_vars program new_vars =
@@ -438,8 +469,35 @@ let create_exit_operation (program : program) final =
   let fvsl = List.map (fun pred -> free_vars pred.term) final in
   let fvs = List.fold_left StringSet.union StringSet.empty fvsl in
   let fvs = StringSet.filter (fun v -> String.starts_with ~prefix:program.name v) fvs in
-  let call = Call { args = fvs; name = "exit"; vars = StringSet.empty; queries = StringSet.empty } in
+  let call = Call { args = fvs; name = "exit"; vars = StringSet.empty; queries = StringSet.singleton "exit"} in
   update_block program (get_exit program) (fun block -> {block with ops = call :: block.ops})
+
+(** Create entry effect from initial conditions *)
+let create_entry_effect source_program target_program initial =
+  let source_entry = get_entry source_program in
+  let target_entry = get_entry target_program in
+  {
+    qname = "entry";
+    req = [];
+    ens = initial;
+    preds = StringSet.empty;
+    source_location = Some source_entry;
+    target_location = Some target_entry;
+  }
+
+(** Create exit effect from final conditions *)
+let create_exit_effect source_program target_program final =
+  let source_exit = get_exit source_program in
+  let target_exit = get_exit target_program in
+  let false_predicate = { term = Atom "false"; sat = None } in
+  {
+    qname = "exit";
+    req = final;
+    ens = [false_predicate];
+    preds = StringSet.empty;
+    source_location = Some source_exit;
+    target_location = Some target_exit;
+  }
 
 let deduplicate_calls =
   let join_call (a : call_op) (b : call_op) =
@@ -479,16 +537,19 @@ let process_program program state =
   let program = add_entry_vars program undefined in
   (program,effs)
 
-let order_effects effects effs =
-  List.map (fun effect ->
+let order_effects parser_state effs =
+  let entry = create_entry_effect parser_state.source_program parser_state.target_program parser_state.initial in
+  let exit = create_exit_effect parser_state.source_program parser_state.target_program parser_state.final in
+  let effects = List.map (fun effect ->
     match StringMap.find_opt effect.qname effs with
     | Some (preds,source,target) -> { effect with preds ; source_location = Some source ; target_location = Some target }
-    | None -> failwith "missing effect")  effects
+    | None -> failwith "missing effect") (exit::parser_state.effect_q) in
+  entry::effects
 
 let join_effs a b =
   StringMap.merge (fun k a b ->
     match a, b with
-    | Some (_,n), Some (a,m) -> Some (a,n,m)
+    | Some (_,n), Some (a,m) -> Some (StringSet.inter a a,n,m)
     | Some _, _
     | _, Some _ -> Printf.printf "Removing %s\n" k; None
     | _ -> None) a b
@@ -503,22 +564,18 @@ let parse_file filename : state =
   let state = List.fold_left parse_sexp empty_parser_state parsed in
   let (source,effs) = process_program state.source_program state in
   let (target,effs2) = process_program state.target_program state in
-  let effects = order_effects state.effect_q (join_effs effs effs2) in
+  let effects = order_effects state (join_effs effs effs2) in
 
-  (* Apply bool2bv1 transformation to both programs and all predicates *)
+  (* Apply bool2bv1 transformation to both programs and all effects *)
   let transformed_source = transform_program_bool2bv1 source in
   let transformed_target = transform_program_bool2bv1 target in
-  let transformed_initial = List.map transform_predicate_bool2bv1 state.initial in
-  let transformed_final = List.map transform_predicate_bool2bv1 state.final in
   let transformed_arbitrary = List.map transform_predicate_bool2bv1 state.arbitrary in
   let transformed_effects = List.map transform_query_bool2bv1 effects in
 
   {
     source = transformed_source;
     target = transformed_target;
-    initial = transformed_initial;
     effects = transformed_effects;
-    final = transformed_final;
     arbitrary = transformed_arbitrary;
     funs = state.funs;
   }

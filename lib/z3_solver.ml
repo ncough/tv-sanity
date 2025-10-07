@@ -37,11 +37,13 @@ let parse_z3_goals output =
 
 (** Analyze Z3 output and determine result *)
 let analyze_z3_output output =
-  let trimmed = String.trim output in
-  if trimmed = "sat" then SAT
-  else if trimmed = "unsat" then UNSAT
-  else if String.starts_with ~prefix:"(goals" output then UNKNOWN (parse_z3_goals output)
-  else failwith ("Z3 error: " ^ output)
+  match String.trim output with
+  | "sat" -> SOLVED
+  | "unsat" -> UNSOLVED []
+  | s when String.starts_with ~prefix:"(goals" s ->
+      UNSOLVED (parse_z3_goals output)
+  | _ ->
+      failwith ("Z3 error: " ^ output)
 
 (** Apply Z3 tactic to a goal with state context *)
 let apply_tactic state tactic goal =
@@ -57,6 +59,10 @@ let apply_tactic state tactic goal =
         failwith "Z3 execution failed"
   )
 
-(** Simple Z3 satisfiability check *)
+(** Z3 satisfiability check *)
 let check_sat state goal =
   apply_tactic state "(check-sat)" goal
+
+(** Z3 simplification tactic *)
+let simplify state goal =
+  apply_tactic state "(apply (repeat (then propagate-values simplify)))" goal

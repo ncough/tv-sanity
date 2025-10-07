@@ -3,6 +3,9 @@
 open Data_structures
 open Utilities
 
+(** Flag to enable/disable default values in ite chains *)
+let use_ite_default_values = ref false
+
 (** Convert S-expression to SMT-LIB string with proper formatting *)
 let sexp_to_smtlib sexp =
   let rec format_sexp = function
@@ -105,6 +108,19 @@ let generate_block_assertions program program_prefix =
 (** Generate assignment assertions within blocks *)
 let generate_assignment_assertions program =
   let buffer = Buffer.create 2048 in
+
+  (* Helper function to generate default value for a variable type *)
+  let get_default_value var =
+    match StringMap.find_opt var program.variables with
+    | None -> "false" (* fallback if variable not found *)
+    | Some var_info ->
+        match var_info.sort with
+        | Sexplib0.Sexp.Atom "Bool" -> "false"
+        | Sexplib0.Sexp.List [Sexplib0.Sexp.Atom "_"; Sexplib0.Sexp.Atom "BitVec"; Sexplib0.Sexp.Atom size] ->
+            Printf.sprintf "(_ bv0 %s)" size
+        | _ -> "false" (* fallback for unknown types *)
+  in
+
   StringMap.iter (fun block_name block ->
     (* Generate phi node assertions *)
     StringMap.iter (fun var phi_list ->
@@ -117,18 +133,39 @@ let generate_assignment_assertions program =
           Buffer.add_string buffer (Printf.sprintf "(assert (! %s :named %s ) )\n" phi_condition assertion_name)
       | _ ->
           (* Multiple predecessors - use nested ite *)
-          let rec build_ite_chain = function
-            | [] -> failwith "Empty phi list in build_ite_chain"
-            | [(_pred_block, expr)] -> sexp_to_smtlib expr
-            | (pred_block, expr) :: rest ->
-                Printf.sprintf "(ite %s %s %s)"
-                  pred_block
-                  (sexp_to_smtlib expr)
-                  (build_ite_chain rest)
-          in
-          let phi_condition = Printf.sprintf "(= %s %s)" var (build_ite_chain phi_list) in
-          let assertion_name = Printf.sprintf "phi_%s" var in
-          Buffer.add_string buffer (Printf.sprintf "(assert (! %s :named %s ) )\n" phi_condition assertion_name)
+          if !use_ite_default_values then
+            (* Use default value at end of ite chain *)
+            let default_value = get_default_value var in
+            let rec build_ite_chain = function
+              | [] -> default_value
+              | [(pred_block, expr)] ->
+                  Printf.sprintf "(ite %s %s %s)"
+                    pred_block
+                    (sexp_to_smtlib expr)
+                    default_value
+              | (pred_block, expr) :: rest ->
+                  Printf.sprintf "(ite %s %s %s)"
+                    pred_block
+                    (sexp_to_smtlib expr)
+                    (build_ite_chain rest)
+            in
+            let phi_condition = Printf.sprintf "(= %s %s)" var (build_ite_chain phi_list) in
+            let assertion_name = Printf.sprintf "phi_%s" var in
+            Buffer.add_string buffer (Printf.sprintf "(assert (! %s :named %s ) )\n" phi_condition assertion_name)
+          else
+            (* Original behavior without default value *)
+            let rec build_ite_chain = function
+              | [] -> failwith "Empty phi list in build_ite_chain"
+              | [(_pred_block, expr)] -> sexp_to_smtlib expr
+              | (pred_block, expr) :: rest ->
+                  Printf.sprintf "(ite %s %s %s)"
+                    pred_block
+                    (sexp_to_smtlib expr)
+                    (build_ite_chain rest)
+            in
+            let phi_condition = Printf.sprintf "(= %s %s)" var (build_ite_chain phi_list) in
+            let assertion_name = Printf.sprintf "phi_%s" var in
+            Buffer.add_string buffer (Printf.sprintf "(assert (! %s :named %s ) )\n" phi_condition assertion_name)
     ) block.phis;
 
     (* Generate operation assertions - exclude assumes as they're in block assertions *)
@@ -246,9 +283,7 @@ let state_to_smtlib_string state =
   Buffer.add_string buffer (generate_assignment_assertions state.target);
 
   (* Add initial, effect, and final assertions *)
-  Buffer.add_string buffer (generate_initial_assertions state.initial);
   Buffer.add_string buffer (generate_effect_assertions state.effects);
-  Buffer.add_string buffer (generate_final_assertions state.final);
 
   (* Add arbitrary assertions *)
   Buffer.add_string buffer (generate_arbitrary_assertions state);
@@ -279,9 +314,7 @@ let state_to_smtlib_tactic_string state tactic =
   Buffer.add_string buffer (generate_assignment_assertions state.target);
 
   (* Add initial, effect, and final assertions *)
-  Buffer.add_string buffer (generate_initial_assertions state.initial);
   Buffer.add_string buffer (generate_effect_assertions state.effects);
-  Buffer.add_string buffer (generate_final_assertions state.final);
 
   (* Add arbitrary assertions *)
   Buffer.add_string buffer (generate_arbitrary_assertions state);

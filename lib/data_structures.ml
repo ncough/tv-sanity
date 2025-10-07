@@ -65,9 +65,7 @@ type program = {
 type state = {
   source : program;
   target : program;
-  initial : predicate list;
   effects : query list;
-  final : predicate list;
   arbitrary : predicate list;
   funs: (string * sexp list) list;
 }
