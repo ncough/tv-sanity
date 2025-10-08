@@ -134,7 +134,6 @@ let generate_assignment_assertions program =
       | _ ->
           (* Multiple predecessors - use nested ite *)
           (* Sort phi_list by pred_block name for deterministic output *)
-          let sorted_phi_list = List.sort (fun (b1, _) (b2, _) -> String.compare b1 b2) phi_list in
           if !use_ite_default_values then
             (* Use default value at end of ite chain *)
             let default_value = get_default_value var in
@@ -151,7 +150,7 @@ let generate_assignment_assertions program =
                     (sexp_to_smtlib expr)
                     (build_ite_chain rest)
             in
-            let phi_condition = Printf.sprintf "(= %s %s)" var (build_ite_chain sorted_phi_list) in
+            let phi_condition = Printf.sprintf "(= %s %s)" var (build_ite_chain phi_list) in
             let assertion_name = Printf.sprintf "phi_%s" var in
             Buffer.add_string buffer (Printf.sprintf "(assert (! %s :named %s ) )\n" phi_condition assertion_name)
           else
@@ -165,7 +164,7 @@ let generate_assignment_assertions program =
                     (sexp_to_smtlib expr)
                     (build_ite_chain rest)
             in
-            let phi_condition = Printf.sprintf "(= %s %s)" var (build_ite_chain sorted_phi_list) in
+            let phi_condition = Printf.sprintf "(= %s %s)" var (build_ite_chain phi_list) in
             let assertion_name = Printf.sprintf "phi_%s" var in
             Buffer.add_string buffer (Printf.sprintf "(assert (! %s :named %s ) )\n" phi_condition assertion_name)
     ) block.phis;

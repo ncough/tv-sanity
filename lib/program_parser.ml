@@ -204,19 +204,25 @@ let parse_phis expr =
 let rec parse_ite = function
   | List [Atom "ite"; blocks; Atom var; rest] when is_var var ->
       (match all_some (List.map get_atom (parse_disj blocks)), parse_ite rest with
-      | Some blocks, Some (phis,def) -> Some((Atom var,blocks)::phis,def)
+      | Some blocks, Some (var_map, def) ->
+          (* Add blocks to the mapping for this variable *)
+          let updated_map = StringMap.update var (function
+            | None -> Some blocks
+            | Some existing_blocks -> Some (existing_blocks @ blocks)
+          ) var_map in
+          Some (updated_map, def)
       | _ -> None)
   | Atom var when is_var var ->
-      Some ([],Atom var)
+      Some (StringMap.empty, var)
   | _ -> None
 
 let process_ite state var (phis,def) =
   update_last_block state (fun block ->
-    let included = List.flatten (List.map snd phis) in
-    let missing_preds = StringSet.diff (StringSet.of_list block.preds) (StringSet.of_list included) in
+    let included_blocks = StringMap.fold (fun _ blocks acc -> StringSet.union acc (StringSet.of_list blocks)) phis StringSet.empty in
+    let missing_preds = StringSet.diff (StringSet.of_list block.preds) included_blocks in
     let def_blocks = StringSet.elements missing_preds in
-    let phis = phis @ [(def,def_blocks)] in
-    let flat = List.flatten (List.map (fun (a,blocks) -> List.map (fun b -> (b,a)) blocks) phis) in
+    let phis = StringMap.bindings (StringMap.add def def_blocks phis) in
+    let flat = List.flatten (List.map (fun (a,blocks) -> List.map (fun b -> (b,Atom a)) blocks) phis) in
     let updated_phis = StringMap.update var (function
       | None -> Some flat
       | Some _ -> failwith "huh"
