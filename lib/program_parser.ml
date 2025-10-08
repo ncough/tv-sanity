@@ -546,9 +546,9 @@ let process_program program state =
 let order_effects parser_state effs =
   let entry = create_entry_effect parser_state.source_program parser_state.target_program parser_state.initial in
   let exit = create_exit_effect parser_state.source_program parser_state.target_program parser_state.final in
-  let effects = List.map (fun effect ->
-    match StringMap.find_opt effect.qname effs with
-    | Some (preds,source,target) -> { effect with preds ; source_location = Some source ; target_location = Some target }
+  let effects = List.map (fun ef ->
+    match StringMap.find_opt ef.qname effs with
+    | Some (preds,source,target) -> { ef with preds ; source_location = Some source ; target_location = Some target }
     | None -> failwith "missing effect") (exit::parser_state.effect_q) in
   entry::effects
 

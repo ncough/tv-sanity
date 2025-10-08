@@ -166,15 +166,15 @@ let solve_goal solver (goal,pos) =
 
 let solve_goals solver effects =
   assert (List.length effects = 1);
-  let effect = List.hd effects in
-  assert (effect.qname = "exit");
-  let goals = effect.req in
+  let ef = List.hd effects in
+  assert (ef.qname = "exit");
+  let goals = ef.req in
   debug_printf "  Attempting to solve %d goals\n" (List.length goals);
   let igoals = List.mapi (fun pos goal -> (goal,pos)) goals in
   match result_bind (UNSOLVED igoals) (solve_goal solver) with
   | SOLVED -> SOLVED
   | UNSOLVED [] -> UNSOLVED []
-  | UNSOLVED req -> UNSOLVED [{effect with req}]
+  | UNSOLVED req -> UNSOLVED [{ef with req}]
 
 (** Generate GraphViz DOT for query dependencies with results and timing *)
 let generate_query_dependency_dot queries results_map =
