@@ -45,6 +45,7 @@ let begin_solver state timeout_ms base_query =
   Buffer.add_string final_buffer "(set-logic QF_UFBV )\n";
 
   (* Add variable declarations for both programs *)
+  Buffer.add_string final_buffer (Smtlib_output.generate_fun_defs state.funs);
   Buffer.add_string final_buffer (Smtlib_output.generate_variable_declarations state.source);
   Buffer.add_string final_buffer (Smtlib_output.generate_variable_declarations state.target);
 
@@ -54,7 +55,7 @@ let begin_solver state timeout_ms base_query =
   send_to_solver solver (Buffer.contents final_buffer);
 
   solver
- 
+
 (** Read solver response *)
 let read_solver_response solver =
   let line = input_line solver.stdout in

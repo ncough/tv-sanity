@@ -137,7 +137,7 @@ let process_fun state name def =
   {state with funs = (`Def,name,def)::state.funs}
 
 let process_fun_decl state name def =
-  {state with funs = (`Def,name,def)::state.funs}
+  {state with funs = (`Decl,name,def)::state.funs}
 
 let process_entry_block state var =
   let state = update_program state var (fun prog -> add_entry prog var) in
