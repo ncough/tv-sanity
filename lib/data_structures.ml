@@ -26,7 +26,7 @@ type call_op = {
 }
 
 (** Represents block operations *)
-type operation = 
+type operation =
   | Assume of sexp
   | Call of call_op
   | Assignment of {
@@ -67,7 +67,7 @@ type state = {
   target : program;
   effects : query list;
   arbitrary : predicate list;
-  funs: (string * sexp list) list;
+  funs: ([`Def | `Decl] * string * sexp list) list;
 }
 
 let empty_block = {
@@ -93,7 +93,7 @@ let add_block program var preds ops =
 
 let add_entry program var =
   match program.entry with
-  | Some existing -> 
+  | Some existing ->
       failwith (Printf.sprintf "Entry already defined: %s, cannot add %s" existing var)
   | None ->
       let program = add_block program var [] [] in
@@ -101,7 +101,7 @@ let add_entry program var =
 
 let set_exit program var =
   match program.exit with
-  | Some existing -> 
+  | Some existing ->
       failwith (Printf.sprintf "Exit already defined: %s, cannot add %s" existing var)
   | None ->
       { program with exit = Some var }
@@ -233,7 +233,7 @@ let query_topo_sort queries =
 (** Update program with new operations for a block *)
 let update_block program block_name fn =
   let fn = function
-    | Some v -> Some (fn v) 
+    | Some v -> Some (fn v)
     | _ -> failwith ("Unknown block: " ^ block_name)
   in
   { program with blocks = StringMap.update block_name fn program.blocks }

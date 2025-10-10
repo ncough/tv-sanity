@@ -35,9 +35,10 @@ let rec flatten_and_conditions = function
 
 let generate_fun_defs funs =
   let buffer = Buffer.create 1024 in
-  List.iter (fun (fun_name,defs) ->
+  List.iter (fun (ty,fun_name,defs) ->
+    let decl = match ty with `Def -> "define-fun" | `Decl -> "declare-fun" in
     let sort_str = String.concat " " (List.map sexp_to_smtlib defs) in
-    Buffer.add_string buffer (Printf.sprintf "(define-fun %s %s )\n" fun_name sort_str)
+    Buffer.add_string buffer (Printf.sprintf "(%s %s %s )\n" decl fun_name sort_str)
   ) funs;
   Buffer.contents buffer
 
@@ -272,6 +273,7 @@ let state_to_smtlib_string state =
   Buffer.add_string buffer generate_smtlib_header;
 
   (* Add variable declarations for both programs *)
+  Buffer.add_string buffer (generate_fun_defs state.funs);
   Buffer.add_string buffer (generate_variable_declarations state.source);
   Buffer.add_string buffer (generate_variable_declarations state.target);
 
@@ -302,7 +304,7 @@ let state_to_smtlib_tactic_string state tactic =
   Buffer.add_string buffer generate_smtlib_header;
 
   (* Add variable declarations for both programs *)
-  (*Buffer.add_string buffer (generate_fun_defs state.funs);*)
+  Buffer.add_string buffer (generate_fun_defs state.funs);
   Buffer.add_string buffer (generate_variable_declarations state.source);
   Buffer.add_string buffer (generate_variable_declarations state.target);
 
@@ -349,6 +351,7 @@ let create_smtlib_file_with_content state content filename =
   Printf.fprintf oc "%s" generate_smtlib_header;
 
   (* Write variable declarations for both programs *)
+  Printf.fprintf oc "%s" (generate_fun_defs state.funs);
   Printf.fprintf oc "%s" (generate_variable_declarations state.source);
   Printf.fprintf oc "%s" (generate_variable_declarations state.target);
 

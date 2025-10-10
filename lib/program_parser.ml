@@ -17,7 +17,7 @@ type parser_state = {
   effect_q: query list;
   last_block : string option;
   arbitrary : predicate list;
-  funs: (string * sexp list) list;
+  funs: ([`Def | `Decl] * string * sexp list) list;
 }
 
 (** Create initial parser state *)
@@ -134,7 +134,10 @@ let process_declaration state name sort =
   update_program state name (fun prog -> add_variable prog name sort None)
 
 let process_fun state name def =
-  {state with funs = (name,def)::state.funs}
+  {state with funs = (`Def,name,def)::state.funs}
+
+let process_fun_decl state name def =
+  {state with funs = (`Def,name,def)::state.funs}
 
 let process_entry_block state var =
   let state = update_program state var (fun prog -> add_entry prog var) in
@@ -305,6 +308,8 @@ let parse_sexp state sexp =
   (* Variable declarations *)
   | List [Atom "declare-const"; Atom name; sort_sexp] ->
       process_declaration state name sort_sexp
+  | List (Atom "declare-fun"::Atom name::defs) ->
+      process_fun_decl state name defs
   | List (Atom "define-fun"::Atom name::defs) ->
       process_fun state name defs
   (* Final assertions: (assert (! (not a) :named InvPrimed)) *)
