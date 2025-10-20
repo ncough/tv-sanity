@@ -35,8 +35,21 @@ let optimize_with_z3_tactics state timeout_ms enable_z3_simplify =
   ) in
   final
 
+let optimize_with_z3_tactics_retry state timeout_ms enable_z3_simplify =
+  let final = optimize_with_z3_tactics state timeout_ms enable_z3_simplify in
+  match final with
+    | SOLVED -> wrap "Solve" (fun () ->
+    let@ initial = make_initial_goal state in
+    let tactic = "(apply (then split-clause simplify))" in
+    let@ simp = wrap "Simplify" (fun () -> Z3_solver.apply_tactic state tactic initial) in
+    let (res,time) = get_time (fun _ -> Cvc5_solver.check_sat state timeout_ms simp) in
+    debug_printf "  %s in %.2fms\n" (pp_result res) time;
+    res
+    )
+  | o -> o
+
 (** Main function for Z3 tactic + CVC5 workflow *)
 let solve state timeout_ms ~enable_z3_simplify =
-  let (final,_) = get_time (fun () -> optimize_with_z3_tactics state timeout_ms enable_z3_simplify) in
+  let (final,_) = get_time (fun () -> optimize_with_z3_tactics_retry state timeout_ms enable_z3_simplify) in
   Printf.printf "%s\n" (pp_result final);
   final
