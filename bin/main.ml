@@ -37,7 +37,8 @@ let process_file filename timeout_ms disable_z3_simplify validate_preds =
   with
   | exn ->
     let error_msg = Printexc.to_string exn in
-    Printf.printf "FAIL: %s - %s\n" (Filename.basename filename) error_msg;
+    debug_printf "FAIL: %s - %s\n" (Filename.basename filename) error_msg;
+    Printf.printf "unknown\n" ;
     false
 
 (** Main entry point *)
