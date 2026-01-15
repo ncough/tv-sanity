@@ -50,7 +50,7 @@ let apply_tactic state tactic goal =
   with_temp_file "z3_tactic" ".smt2" (fun temp_file ->
     let content = Printf.sprintf "%s\n%s\n" goal tactic in
     create_smtlib_file_with_content state content temp_file;
-    let z3_cmd = Printf.sprintf "%s %s" z3_path temp_file in
+    let z3_cmd = Printf.sprintf "%s '%s'" z3_path temp_file in
     let (exit_status, output) = run_command z3_cmd in
     match exit_status with
     | Unix.WEXITED 0 -> analyze_z3_output output
