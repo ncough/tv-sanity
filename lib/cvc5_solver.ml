@@ -24,7 +24,7 @@ let apply_tactic state timeout tactic goal =
     create_smtlib_file_with_content state content temp_file;
 
     (* Run CVC5 with timeout *)
-    let cvc5_cmd = Printf.sprintf "%s --tlimit %d --repeat-simp '%s'" cvc5_path timeout temp_file in
+    let cvc5_cmd = Printf.sprintf "%s --force-logic QF_BV --tlimit %d --repeat-simp '%s'" cvc5_path timeout temp_file in
     let (exit_status, output) = run_command cvc5_cmd in
 
     result_of_cvc goal exit_status output
