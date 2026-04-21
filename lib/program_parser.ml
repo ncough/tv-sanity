@@ -372,29 +372,62 @@ let validate_phi block_predecessors def_at_exit_map var phi_list =
   ) phi_list in
   union_all undef
 
+
+let is_trace s =
+  (String.starts_with ~prefix:"target__TRACE" s ||
+  String.starts_with ~prefix:"source__TRACE" s) &&
+  not (String.starts_with ~prefix:"target__TRACE_MEM" s ||
+  String.starts_with ~prefix:"source__TRACE_MEM" s)
+
+let get_trace s =
+  match StringSet.fold (fun name acc -> if is_trace name then name::acc else acc) s [] with
+  | [a] -> a
+  | _ -> failwith "no trace"
+
+let get_traces = StringSet.filter (is_trace)
+
+let find_trace name defs =
+  match StringMap.find_opt name defs with
+  | Some v -> v
+  | None -> failwith (Printf.sprintf "No entry for %s\n" name)
+
 (** Place as many floating operations as possible *)
-let rec repeat_floating defs floating preds effs name =
+let rec repeat_floating defs floating trace_defs effs name =
   let (placeable, floating) = List.partition (fun op ->
     StringSet.subset (op_fvs op) defs
   ) floating in
-  if placeable = [] then (defs,placeable,floating,preds,effs)
+  if placeable = [] then (defs,placeable,floating,trace_defs,effs)
   else
     let placed_calls = List.filter_map (function Call c -> Some c | _ -> None) placeable in
+
+    (* Link the placed queries to the effects that define its trace *)
     let effs = List.fold_left (fun effs c ->
+      let trace_arg = get_trace c.args in
+      let preds = find_trace trace_arg trace_defs in
       StringSet.fold (fun query_name effs ->
         StringMap.add query_name (preds,name) effs
       ) c.queries effs
     ) effs placed_calls in
-    let all_queries = List.fold_left (fun acc c -> StringSet.union acc c.queries) StringSet.empty placed_calls in
-    let preds = all_queries in
+
+    (* Update trace_def for the placed queries *)
+    let trace_defs = List.fold_left (fun trace_defs c ->
+      let trace_res = get_trace c.vars in
+      let existing = StringMap.find_opt trace_res trace_defs in
+      let updated = match existing with Some(s) -> StringSet.union s c.queries | None -> c.queries in
+      StringMap.add trace_res updated trace_defs
+    ) trace_defs placed_calls in
+
     let defs = List.fold_right StringSet.union (List.map op_defs placeable) defs in
-    let (defs,placeable',floating,preds,effs) = repeat_floating defs floating preds effs name in
-    (defs,placeable@placeable',floating,preds,effs)
+    let (defs,placeable',floating,trace_defs,effs) = repeat_floating defs floating trace_defs effs name in
+    (defs,placeable@placeable',floating,trace_defs,effs)
 
 (** Place the floating operations throughout the program, based on dependecies *)
 let solve_definitions program floating =
+  let trace_entry = program.name ^ "__TRACE" in
+  let trace_defs = StringMap.add trace_entry (StringSet.add "entry" StringSet.empty) StringMap.empty in
+
   let (program, _, floating, undefined, _, effs) =
-    List.fold_left (fun (program, def_at_exit_map, floating, undefined, preds_at_exit,effs) block_name ->
+    List.fold_left (fun (program, def_at_exit_map, floating, undefined,trace_defs,effs) block_name ->
       let block = StringMap.find block_name program.blocks in
       let undefined = StringMap.fold (fun k v acc ->
         let undef = validate_phi block.preds def_at_exit_map k v in
@@ -407,17 +440,22 @@ let solve_definitions program floating =
       let defs = StringSet.union phi_defs def_at_entry in
 
       (* Calculate incoming exit order *)
-      let incoming = List.map (fun p -> StringMap.find p preds_at_exit) block.preds in
-      let incoming = if block_name = get_entry program then [StringSet.singleton "entry"] else incoming in
-      let preds = List.fold_left StringSet.union StringSet.empty incoming in
+      let trace_defs = StringMap.fold (fun var exps acc ->
+        if is_trace var then begin
+          let inputs = List.map (function
+            | (_,Atom v) -> find_trace v trace_defs
+            | _ -> failwith "huh") exps in
+          let join = List.fold_left StringSet.union StringSet.empty inputs in
+          StringMap.add var join acc
+        end else acc) block.phis trace_defs in
 
-      let (defs,prefix,floating,preds,effs) =
-        if block_name <> get_entry program then repeat_floating defs floating preds effs block_name
-        else (defs,[],floating,preds,effs) in
+      let (defs,prefix,floating,trace_defs,effs) =
+        if block_name <> get_entry program then repeat_floating defs floating trace_defs effs block_name
+        else (defs,[],floating,trace_defs,effs) in
 
       (* Process operations in sequence, tracking definitions and placing floating *)
-      let (ops, defs, floating, undefined, preds, effs) =
-        List.fold_left (fun (ops, defs, floating, undefined, preds, effs) operation ->
+      let (ops, defs, floating, undefined, trace_defs, effs) =
+        List.fold_left (fun (ops, defs, floating, undefined, trace_defs, effs) operation ->
           (* Check that all uses in this operation are defined *)
           let used_vars = op_fvs operation in
           let new_undefined = StringSet.diff used_vars defs in
@@ -429,25 +467,34 @@ let solve_definitions program floating =
           let undefined = StringSet.union new_undefined undefined in
 
           (* Place operations whose dependencies are now satisfied *)
-          let (defs,placeable,floating,preds,effs) = repeat_floating defs floating preds effs block_name in
-          (ops@ [operation] @ placeable, defs, floating, undefined,preds,effs)
-        ) ([], defs, floating, undefined, preds, effs) block.ops
+          let (defs,placeable,floating,trace_defs,effs) = repeat_floating defs floating trace_defs effs block_name in
+          (ops@ [operation] @ placeable, defs, floating, undefined,trace_defs,effs)
+        ) ([], defs, floating, undefined, trace_defs, effs) block.ops
       in
-      let (defs,suffix,floating,preds,effs) = repeat_floating defs floating preds effs block_name in
+      let (defs,suffix,floating,trace_defs,effs) = repeat_floating defs floating trace_defs effs block_name in
 
       (* Store exit predecessors in effs map when processing exit block *)
       let effs =
-        if block_name = get_exit program then StringMap.add "exit" (preds, block_name) effs else effs
+        if block_name = get_exit program then begin
+          let block = get_block program block_name in
+          match block.ops with
+          | (Call c)::_ when c.name = "exit" ->
+              let traces = get_traces c.args in
+              let preds = StringSet.fold (fun trace_arg acc ->
+                StringSet.union acc (find_trace trace_arg trace_defs)
+              ) traces StringSet.empty in
+              StringMap.add "exit" (preds, block_name) effs
+          | _ -> failwith "exit structure"
+        end else effs
       in
 
       (* Update the block with processed operations *)
       let ops = prefix @ ops @ suffix in
       let program = update_block program block_name (fun b -> {b with ops}) in
       let updated_def_map = StringMap.add block_name defs def_at_exit_map in
-      let preds_map = StringMap.add block_name preds preds_at_exit in
 
-      (program, updated_def_map, floating, undefined,preds_map,effs)
-  ) (program, StringMap.empty, floating, StringSet.empty, StringMap.empty, StringMap.empty) (topo_sort program) in
+      (program, updated_def_map, floating, undefined,trace_defs,effs)
+  ) (program, StringMap.empty, floating, StringSet.empty, trace_defs, StringMap.empty) (topo_sort program) in
 
   (* Validate there are no remaining effects that couldn't be placed *)
   if floating <> [] then
@@ -554,13 +601,16 @@ let order_effects parser_state effs =
   let effects = List.map (fun ef ->
     match StringMap.find_opt ef.qname effs with
     | Some (preds,source,target) -> { ef with preds ; source_location = Some source ; target_location = Some target }
-    | None -> failwith "missing effect") (exit::parser_state.effect_q) in
+    | None ->
+        Printf.printf "missing effect %s\n" ef.qname;
+        failwith "missing effect "
+  ) (exit::parser_state.effect_q) in
   entry::effects
 
 let join_effs a b =
   StringMap.merge (fun k a b ->
     match a, b with
-    | Some (_,n), Some (a,m) -> Some (StringSet.inter a a,n,m)
+    | Some (a,n), Some (b,m) -> Some (StringSet.inter a b,n,m)
     | Some _, _
     | _, Some _ -> Printf.printf "Removing %s\n" k; None
     | _ -> None) a b
