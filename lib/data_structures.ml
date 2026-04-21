@@ -108,7 +108,7 @@ let set_exit program var =
 
 let get_entry program = Option.get program.entry
 let get_exit program = Option.get program.exit
-
+let get_block program name = StringMap.find name program.blocks
 
 (** Add variable to program *)
 let add_variable program name sort value =
