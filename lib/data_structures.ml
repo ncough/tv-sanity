@@ -257,7 +257,7 @@ let idom (rpo_queries : query list) =
       let ndom = (match preds with
         | [p] -> p
         | p::ps -> List.fold_left (intersection !idoms) p ps
-        | [] -> failwith "huh") in
+        | [] -> failwith @@ Printf.sprintf "Query %s has no predecessors somehow, likely trivially false" q.qname) in
       let c = (StringMap.find_opt q.qname !idoms <> Some ndom) in
       if c then begin
         idoms := StringMap.add q.qname ndom !idoms;

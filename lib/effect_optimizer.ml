@@ -37,7 +37,7 @@ type results_map = (unit result * float) StringMap.t
 let add_result results name result =
   StringMap.update name (function
     | None -> Some result
-    | Some _ -> failwith @@ "Reprocessed result: " ^ name
+    | Some _ -> Some result(*failwith @@ "Reprocessed result: " ^ name*)
   ) results
 
 (** Generate query reachability assertions *)
@@ -103,7 +103,7 @@ let shortcuts (eff : query) results =
   ) eff.preds (0,0,0) in
   (unsat > 0, unknown > 0, unsat = 0 && unknown = 0 && sat > 0)
 
-let rec dominator_solve count depth solver eff doms solved results =
+let rec dominator_solve count depth solver eff doms solved results imm_exit =
   debug_printf "  [%d,%d] %s - " !count depth eff.qname;
   flush_all ();
   count := !count + 1;
@@ -152,27 +152,43 @@ let rec dominator_solve count depth solver eff doms solved results =
           send_to_solver solver cond;
           let sub_queries = match StringMap.find_opt eff.qname doms with Some v -> v | _ -> [] in
           let inner = List.fold_left (fun sides query ->
-            let inner = dominator_solve count (depth + 1) solver query doms solved results in
+            let inner = dominator_solve count (depth + 1) solver query doms solved results imm_exit in
             sides ^ inner
           ) "" sub_queries in
+          (* TODO: Technically a set... *)
+          (match StringMap.find_opt eff.qname imm_exit with
+          | Some exit ->
+              ignore (dominator_solve count (depth + 1) solver exit doms solved results imm_exit)
+          | None -> ());
           send_to_solver solver "(pop)\n";
 
           (* register results here *)
           let guarded = Printf.sprintf "%s\n(assert %s)\n(assert (=> %s %s))\n" inner ens_combined reachable req_combined in
           send_to_solver solver guarded;
           guarded
-
-      | _ -> failwith "todo"
+      | _ -> 
+          (* Skip subtree?*)
+          let end_time = Unix.gettimeofday () in
+          let ms = ((end_time -. start_time) *. 1000.0) in
+          debug_printf "UNKNOWN in %.2fms\n" ms;
+          results := add_result !results name (UNSOLVED [eff], ms);
+          ""
 
 let scoped_solve_effects solver effects =
+  let (exits,effects) = List.partition (fun q -> String.starts_with ~prefix:"exit" q.qname) effects in
   let topo_effects = Data_structures.query_topo_sort effects in
   debug_printf "  Processing %d effects\n" (List.length topo_effects);
   let doms = Data_structures.dom_tree topo_effects in
-  let entry = List.hd effects in
+  let entry = List.hd topo_effects in
   let count = ref 0 in
   let solved = ref [] in
   let results = ref StringMap.empty in
-  let (_,ms)= get_time (fun _ -> dominator_solve count 0 solver entry doms solved results) in
+
+  let imm_exit = List.fold_left (fun acc (q:query) ->
+      StringSet.fold (fun pred -> StringMap.add pred q) q.preds acc 
+      ) StringMap.empty exits in
+
+  let (_,ms)= get_time (fun _ -> dominator_solve count 0 solver entry doms solved results imm_exit) in
   Printf.printf "SOLVED IN %.2fms\n" ms;
   (!solved, !results)
 
