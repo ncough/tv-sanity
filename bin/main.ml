@@ -6,7 +6,7 @@ open Tv_sanity.Utilities
 open Tv_sanity.Program_validator
 
 (** Parse and process a single SMT-LIB2 file with main pipeline *)
-let process_file filename timeout_ms disable_z3_simplify validate_preds =
+let process_file filename timeout_ms disable_z3_simplify validate_preds enable_scope  =
   try
     let state = parse_file filename in
     let base_filename = Filename.remove_extension filename in
@@ -23,7 +23,7 @@ let process_file filename timeout_ms disable_z3_simplify validate_preds =
     (* Apply copy/constant propagation *)
     let state = Tv_sanity.Copy_prop.transform_state state in
 
-    let r = solve state timeout_ms ~enable_z3_simplify:(not disable_z3_simplify) in
+    let r = solve state timeout_ms ~enable_z3_simplify:(not disable_z3_simplify) enable_scope in
     let final = (match r with
         | SOLVED -> begin
         let cvc5_cmd = Printf.sprintf "%s --tlimit %d --repeat-simp '%s'" cvc5_path timeout_ms filename in
@@ -48,6 +48,7 @@ let () =
   let input_files = ref [] in
   let validate_preds = ref false in
   let disable_z3_simplify = ref false in
+  let enable_scope = ref false in
 
   (* Argument specification *)
   let spec = [
@@ -59,6 +60,8 @@ let () =
      " Enable mutually exclusive predecessor check");
     ("--no-z3-simplify", Arg.Set disable_z3_simplify,
      " Disable Z3 simplification before effect optimization");
+    ("--scope", Arg.Set enable_scope,
+     " Enable scoped solver");
   ] in
 
   let usage_msg = Printf.sprintf "Usage: %s [options] <smt2_file>\nOptions:" Sys.argv.(0) in
@@ -76,7 +79,7 @@ let () =
       Arg.usage spec usage_msg;
       exit 1
   | [filename] ->
-      if process_file filename !timeout_ms !disable_z3_simplify !validate_preds then
+      if process_file filename !timeout_ms !disable_z3_simplify !validate_preds !enable_scope then
         exit 0
       else
         exit 1

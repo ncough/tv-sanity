@@ -23,8 +23,8 @@ let make_initial_goal state =
   Buffer.add_string buffer (generate_arbitrary_assertions state);
   UNSOLVED [Buffer.contents buffer]
 
-let optimize_with_z3_tactics state timeout_ms enable_z3_simplify =
-  let@ state = wrap "Effect Opt" (fun () -> Effect_optimizer.run state timeout_ms enable_z3_simplify) in
+let optimize_with_z3_tactics state timeout_ms enable_z3_simplify enable_scope =
+  let@ state = wrap "Effect Opt" (fun () -> Effect_optimizer.run state timeout_ms enable_z3_simplify enable_scope) in
   let@ initial = make_initial_goal state in
   let tactic = "(apply (then split-clause simplify))" in
   let@ simp = wrap "Simplify" (fun () -> Z3_solver.apply_tactic state tactic initial) in

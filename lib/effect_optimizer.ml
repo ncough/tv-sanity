@@ -103,6 +103,79 @@ let shortcuts (eff : query) results =
   ) eff.preds (0,0,0) in
   (unsat > 0, unknown > 0, unsat = 0 && unknown = 0 && sat > 0)
 
+let rec dominator_solve count depth solver eff doms solved results =
+  debug_printf "  [%d,%d] %s - " !count depth eff.qname;
+  flush_all ();
+  count := !count + 1;
+  let start_time = Unix.gettimeofday () in
+  send_to_solver solver "(push)\n";
+  let req_combined = generate_conjunction eff.req in
+  let ens_combined = generate_conjunction eff.ens in
+  let reachable = generate_query_reachability eff in
+
+  let name = eff.qname in
+
+  let reach_cond = Printf.sprintf "(assert %s)\n" reachable in
+  send_to_solver solver reach_cond;
+  send_to_solver solver "(check-sat)\n";
+  let result = read_solver_response solver in
+  match result with
+  | "unsat" ->
+      send_to_solver solver "(pop)\n";
+      let end_time = Unix.gettimeofday () in
+      let ms = ((end_time -. start_time) *. 1000.0) in
+      debug_printf "UNRCH in %.2fms\n" ms;
+      results := add_result !results name (SOLVED,ms);
+      ""
+  | _ ->
+      send_to_solver solver "(push)\n";
+      let inv_req_cond = Printf.sprintf "(assert (not %s))\n" req_combined in
+      send_to_solver solver inv_req_cond;
+      send_to_solver solver "(check-sat)\n";
+      let result = read_solver_response solver in
+      send_to_solver solver "(pop)\n";
+      match result with
+      | "sat" ->
+          send_to_solver solver "(pop)\n";
+          let end_time = Unix.gettimeofday () in
+          let ms = ((end_time -. start_time) *. 1000.0) in
+          debug_printf "SAT in %.2fms\n" ms;
+          results := add_result !results name (SOLVED,ms);
+          ""
+      |  "unsat" ->
+          let end_time = Unix.gettimeofday () in
+          let ms = ((end_time -. start_time) *. 1000.0) in
+          debug_printf "UNSAT in %.2fms\n" ms;
+          results := add_result !results name (UNSOLVED [],ms);
+          solved := {eff with req = []; ens = eff.req @ eff.ens} :: !solved;
+          let cond = Printf.sprintf "(assert %s)\n(assert %s)\n" req_combined ens_combined in
+          send_to_solver solver cond;
+          let sub_queries = match StringMap.find_opt eff.qname doms with Some v -> v | _ -> [] in
+          let inner = List.fold_left (fun sides query ->
+            let inner = dominator_solve count (depth + 1) solver query doms solved results in
+            sides ^ inner
+          ) "" sub_queries in
+          send_to_solver solver "(pop)\n";
+
+          (* register results here *)
+          let guarded = Printf.sprintf "%s\n(assert %s)\n(assert (=> %s %s))\n" inner ens_combined reachable req_combined in
+          send_to_solver solver guarded;
+          guarded
+
+      | _ -> failwith "todo"
+
+let scoped_solve_effects solver effects =
+  let topo_effects = Data_structures.query_topo_sort effects in
+  debug_printf "  Processing %d effects\n" (List.length topo_effects);
+  let doms = Data_structures.dom_tree topo_effects in
+  let entry = List.hd effects in
+  let count = ref 0 in
+  let solved = ref [] in
+  let results = ref StringMap.empty in
+  let (_,ms)= get_time (fun _ -> dominator_solve count 0 solver entry doms solved results) in
+  Printf.printf "SOLVED IN %.2fms\n" ms;
+  (!solved, !results)
+
 (** Solve conditions on effects by processing their conditions in topological order using an
     incremental SMT solver. *)
 let solve_effects solver effects =
@@ -116,7 +189,7 @@ let solve_effects solver effects =
 
   debug_printf "  Processing %d effects\n" (List.length non_trivial);
 
-  let (solved, unsolved, results, _) = List.fold_left (
+  let ((solved, unsolved, results, _),ms) = get_time (fun _ -> List.fold_left (
     fun (solved, unsolved, results, pos) eff ->
       let name = eff.qname in
       debug_printf "  [%d] " pos;
@@ -137,8 +210,10 @@ let solve_effects solver effects =
       | SOLVED -> (solved, unsolved)
       | UNSOLVED _ -> (solved, eff :: unsolved)) in
       (solved,unsolved,add_result results name (outcome,elapsed_ms),pos+1)
-    ) ([], [], results, 0) non_trivial
+    ) ([], [], results, 0) non_trivial)
   in
+
+  debug_printf "SOLVED IN %.2fms\n" ms;
 
   (* Combine results: trivial queries + solved + unsolved *)
   let reduced_effects = trivial @ solved @ List.rev unsolved in
@@ -259,14 +334,14 @@ let generate_query_dependency_dot queries results_map =
   Buffer.contents buffer
 
 (** Main entry point for query optimization *)
-let run state timeout_ms enable_z3_simplify =
+let run state timeout_ms enable_z3_simplify enable_scope =
   let base = generate_incremental_base state in
   let@ base = if enable_z3_simplify then Z3_solver.simplify state base else UNSOLVED [base] in
   let solver = begin_solver state timeout_ms base in
 
   (* Run solver over the effects *)
   let (final,effects) = List.partition (fun q -> q.qname = "exit") state.effects in
-  let (effects, results_map) = solve_effects solver effects in
+  let (effects, results_map) = (if enable_scope then scoped_solve_effects else solve_effects) solver effects in
 
   (* Generate query dependency visualization with results and timing *)
   if is_debug_enabled () then begin
