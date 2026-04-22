@@ -230,6 +230,21 @@ let query_topo_sort queries =
   List.iter (fun query -> dfs query.qname) queries;
   List.filter_map (fun name -> StringMap.find_opt name query_map) !order
 
+let reach_exit queries =
+  let query_map = List.fold_left (fun acc query ->
+    StringMap.add query.qname query acc
+  ) StringMap.empty queries in
+  let visited = ref StringSet.empty in
+  let rec walk query_name =
+    if not (StringSet.mem query_name !visited) then begin
+      visited := StringSet.add query_name !visited;
+      let (query:query) = StringMap.find query_name query_map in
+      StringSet.iter walk query.preds
+    end
+  in
+  walk "exit";
+  List.filter (fun q -> StringSet.mem q.qname !visited) queries
+
 let intersection idoms a b =
   let f1 = ref a in
   let f2 = ref b in

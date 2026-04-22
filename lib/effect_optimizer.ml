@@ -142,42 +142,64 @@ let rec dominator_solve count depth solver eff doms solved results imm_exit =
           debug_printf "SAT in %.2fms\n" ms;
           results := add_result !results name (SOLVED,ms);
           ""
-      |  "unsat" ->
+      |  _ ->
+          let suc = (result = "unsat") in
           let end_time = Unix.gettimeofday () in
           let ms = ((end_time -. start_time) *. 1000.0) in
-          debug_printf "UNSAT in %.2fms\n" ms;
-          results := add_result !results name (UNSOLVED [],ms);
-          solved := {eff with req = []; ens = eff.req @ eff.ens} :: !solved;
-          let cond = Printf.sprintf "(assert %s)\n(assert %s)\n" req_combined ens_combined in
+          debug_printf "%s in %.2fms\n" (if suc then "UNSAT" else "UNKNOWN") ms;
+          results := add_result !results name (UNSOLVED (if suc then [] else [eff]),ms);
+          if suc then solved := {eff with req = []; ens = eff.req @ eff.ens} :: !solved;
+          let cond = if suc then
+            Printf.sprintf "(assert %s)\n(assert %s)\n" req_combined ens_combined
+          else
+            Printf.sprintf "(assert (=> %s %s))\n" req_combined ens_combined
+          in
           send_to_solver solver cond;
           let sub_queries = match StringMap.find_opt eff.qname doms with Some v -> v | _ -> [] in
           let inner = List.fold_left (fun sides query ->
             let inner = dominator_solve count (depth + 1) solver query doms solved results imm_exit in
             sides ^ inner
           ) "" sub_queries in
-          (* TODO: Technically a set... *)
+
           (match StringMap.find_opt eff.qname imm_exit with
           | Some exit ->
-              ignore (dominator_solve count (depth + 1) solver exit doms solved results imm_exit)
+              debug_printf "  EXIT SPLIT START\n";
+              List.iter (fun exit ->
+                ignore (dominator_solve count (depth + 1) solver exit doms solved results imm_exit)
+              ) exit;
+              debug_printf "  EXIT SPLIT DONE\n";
           | None -> ());
+
           send_to_solver solver "(pop)\n";
 
           (* register results here *)
-          let guarded = Printf.sprintf "%s\n(assert %s)\n(assert (=> %s %s))\n" inner ens_combined reachable req_combined in
+          let guarded = if suc then
+            Printf.sprintf "%s\n(assert %s)\n(assert (=> %s %s))\n" inner ens_combined reachable req_combined
+          else
+            Printf.sprintf "%s\n(assert (=> %s %s))\n" inner req_combined ens_combined
+          in
           send_to_solver solver guarded;
           guarded
-      | _ -> 
-          (* Skip subtree?*)
-          let end_time = Unix.gettimeofday () in
-          let ms = ((end_time -. start_time) *. 1000.0) in
-          debug_printf "UNKNOWN in %.2fms\n" ms;
-          results := add_result !results name (UNSOLVED [eff], ms);
-          ""
+
+let collect_splits queries depth =
+  let query_map = List.fold_left (fun acc query ->
+    StringMap.add query.qname query acc
+  ) StringMap.empty queries in
+  let visited = ref StringSet.empty in
+  let rec walk depth query_name =
+    if depth > 0 && not (StringSet.mem query_name !visited) then begin
+      visited := StringSet.add query_name !visited;
+      let preds = match StringMap.find_opt query_name query_map with Some(v) -> v.preds | None -> StringSet.empty in
+      StringSet.iter (walk (depth - 1)) preds
+    end
+  in
+  walk depth "exit";
+  List.partition (fun q -> StringSet.mem q.qname !visited) queries
 
 let scoped_solve_effects solver effects =
-  let (exits,effects) = List.partition (fun q -> String.starts_with ~prefix:"exit" q.qname) effects in
+  let (exits,effects) = collect_splits effects 1 in
   let topo_effects = Data_structures.query_topo_sort effects in
-  debug_printf "  Processing %d effects\n" (List.length topo_effects);
+  debug_printf "  Processing %d effects, %d split\n" (List.length topo_effects) (List.length exits);
   let doms = Data_structures.dom_tree topo_effects in
   let entry = List.hd topo_effects in
   let count = ref 0 in
@@ -185,8 +207,11 @@ let scoped_solve_effects solver effects =
   let results = ref StringMap.empty in
 
   let imm_exit = List.fold_left (fun acc (q:query) ->
-      StringSet.fold (fun pred -> StringMap.add pred q) q.preds acc 
-      ) StringMap.empty exits in
+      StringSet.fold (fun pred -> StringMap.update pred (function
+        | Some e -> Some (q::e)
+        | None -> Some ([q])
+  )) q.preds acc
+  ) StringMap.empty exits in
 
   let (_,ms)= get_time (fun _ -> dominator_solve count 0 solver entry doms solved results imm_exit) in
   Printf.printf "SOLVED IN %.2fms\n" ms;
@@ -355,21 +380,40 @@ let run state timeout_ms enable_z3_simplify enable_scope =
   let@ base = if enable_z3_simplify then Z3_solver.simplify state base else UNSOLVED [base] in
   let solver = begin_solver state timeout_ms base in
 
+  (* Don't need effects that can't influence exit *)
+  let filter_effects = Data_structures.reach_exit state.effects in
+
   (* Run solver over the effects *)
-  let (final,effects) = List.partition (fun q -> q.qname = "exit") state.effects in
-  let (effects, results_map) = (if enable_scope then scoped_solve_effects else solve_effects) solver effects in
+  if enable_scope then
+    let (_, results_map) = scoped_solve_effects solver filter_effects in
 
-  (* Generate query dependency visualization with results and timing *)
-  if is_debug_enabled () then begin
-    let dot_content = generate_query_dependency_dot state.effects results_map in
-    let dot_filename = get_debug_file_path "query_dependencies.dot" in
-    let dot_file = open_out dot_filename in
-    output_string dot_file dot_content;
-    close_out dot_file;
-    debug_printf "  Query dependency graph written to %s\n" dot_filename
-  end;
+    (* Generate query dependency visualization with results and timing *)
+    if is_debug_enabled () then begin
+      let dot_content = generate_query_dependency_dot state.effects results_map in
+      let dot_filename = get_debug_file_path "query_dependencies.dot" in
+      let dot_file = open_out dot_filename in
+      output_string dot_file dot_content;
+      close_out dot_file;
+      debug_printf "  Query dependency graph written to %s\n" dot_filename
+    end;
 
-  match solve_goals solver final with
-  | SOLVED -> SOLVED
-  | UNSOLVED [] -> UNSOLVED []
-  | UNSOLVED final -> UNSOLVED ([{state with effects = effects @ final }])
+    UNSOLVED []
+  else begin
+    let (final,effects) = List.partition (fun q -> q.qname = "exit") filter_effects in
+    let (effects, results_map) = solve_effects solver effects in
+
+    (* Generate query dependency visualization with results and timing *)
+    if is_debug_enabled () then begin
+      let dot_content = generate_query_dependency_dot state.effects results_map in
+      let dot_filename = get_debug_file_path "query_dependencies.dot" in
+      let dot_file = open_out dot_filename in
+      output_string dot_file dot_content;
+      close_out dot_file;
+      debug_printf "  Query dependency graph written to %s\n" dot_filename
+    end;
+
+    match solve_goals solver final with
+    | SOLVED -> SOLVED
+    | UNSOLVED [] -> UNSOLVED []
+    | UNSOLVED final -> UNSOLVED ([{state with effects = effects @ final }])
+  end
