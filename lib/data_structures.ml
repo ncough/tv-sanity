@@ -230,6 +230,55 @@ let query_topo_sort queries =
   List.iter (fun query -> dfs query.qname) queries;
   List.filter_map (fun name -> StringMap.find_opt name query_map) !order
 
+let intersection idoms a b =
+  let f1 = ref a in
+  let f2 = ref b in
+  while !f1 <> !f2 do
+    while (snd !f1 < snd !f2) do
+      f1 := StringMap.find (fst !f1) idoms
+    done;
+    while (snd !f2 < snd !f1) do
+      f2 := StringMap.find (fst !f2) idoms
+    done
+  done;
+  !f1
+
+let idom (rpo_queries : query list) =
+  let (_,po) = List.fold_right (fun q (i,acc) -> (i+1, StringMap.add q.qname i acc))
+    rpo_queries (0,StringMap.empty) in
+  let body = List.tl rpo_queries in
+  let entry_po = List.length rpo_queries - 1 in
+  let idoms = ref (StringMap.add "entry" ("entry",entry_po) StringMap.empty) in
+  let changed = ref true in
+  while !changed do
+    changed := false;
+    List.iter (fun (q:query) ->
+      let preds = List.map (fun p -> (p,StringMap.find p po)) (StringSet.to_list q.preds) in
+      let ndom = (match preds with
+        | [p] -> p
+        | p::ps -> List.fold_left (intersection !idoms) p ps
+        | [] -> failwith "huh") in
+      let c = (StringMap.find_opt q.qname !idoms <> Some ndom) in
+      if c then begin
+        idoms := StringMap.add q.qname ndom !idoms;
+        changed := true;
+      end
+    ) body
+  done;
+  !idoms
+
+let dom_tree (rpo_queries : query list) =
+  let idom = idom rpo_queries in
+  let dom_tree = ref StringMap.empty in
+  List.iter (fun (q:query) ->
+    let name = q.qname in
+    let (above,_) = StringMap.find name idom in
+    if above <> name then begin
+      let upd = match StringMap.find_opt above !dom_tree with Some(v) -> (v@[q]) | None -> [q] in
+      dom_tree := StringMap.add above upd !dom_tree
+    end) rpo_queries;
+  !dom_tree
+
 (** Update program with new operations for a block *)
 let update_block program block_name fn =
   let fn = function
