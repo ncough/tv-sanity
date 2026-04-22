@@ -271,7 +271,7 @@ let idom (rpo_queries : query list) =
   while !changed do
     changed := false;
     List.iter (fun (q:query) ->
-      let preds = List.map (fun p -> (p,StringMap.find p po)) (StringSet.to_list q.preds) in
+      let preds = List.map (fun p -> (p,StringMap.find p po)) (StringSet.elements q.preds) in
       let ndom = (match preds with
         | [p] -> p
         | p::ps -> List.fold_left (intersection !idoms) p ps

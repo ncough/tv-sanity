@@ -494,7 +494,7 @@ let solve_definitions program floating =
 
       (* find the trace variable *)
       let traces = StringMap.filter (fun k _ -> is_trace k) subst in
-      let trace = match StringMap.to_list traces with [(_,Atom v)] -> v | _ -> failwith "huh2" in
+      let trace = match StringMap.bindings traces with [(_,Atom v)] -> v | _ -> failwith "huh2" in
       let preds = find_trace trace trace_defs in
       StringMap.add pred (preds,subst) acc
     ) StringMap.empty block.preds
