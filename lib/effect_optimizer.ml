@@ -74,8 +74,7 @@ let test_effect solver eff decidable =
       | UNSOLVED [] ->
           debug_printf "UNSAT";
           send_to_solver solver (Printf.sprintf "(assert %s)\n" ens_combined);
-          send_to_solver solver (Printf.sprintf "(assert %s)\n" req_combined);
-          (*send_to_solver solver (Printf.sprintf "(assert (=> %s (and %s %s)))\n" reachable ens_combined req_combined);*)
+          send_to_solver solver (Printf.sprintf "(assert (=> %s %s))\n" reachable req_combined);
           UNSOLVED []
       | SOLVED when decidable ->
           debug_printf "SAT  ";
