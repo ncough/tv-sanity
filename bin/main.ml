@@ -24,16 +24,7 @@ let process_file filename timeout_ms disable_z3_simplify validate_preds enable_s
     let state = Tv_sanity.Copy_prop.transform_state state in
 
     let r = solve state timeout_ms ~enable_z3_simplify:(not disable_z3_simplify) enable_scope in
-    let final = (match r with
-        | SOLVED -> begin
-        let cvc5_cmd = Printf.sprintf "%s --tlimit %d --repeat-simp '%s'" cvc5_path timeout_ms filename in
-        let (exit_status, output) = run_command cvc5_cmd in
-        let final = Tv_sanity.Cvc5_solver.result_of_cvc "" exit_status output in
-        final
-        end
-        | o -> o
-    ) in
-      Printf.printf "%s\n" (pp_result final); true
+    Printf.printf "%s\n" (pp_result r); true
   with
   | exn ->
     let error_msg = Printexc.to_string exn in
