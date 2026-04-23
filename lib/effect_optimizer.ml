@@ -34,11 +34,13 @@ let generate_incremental_base state =
 (** Results map with timing *)
 type results_map = (unit result * float) StringMap.t
 
-let add_result results name result =
+let add_result results name (r,ms') =
   StringMap.update name (function
-    | None -> Some result
-    | Some _ -> Some result(*failwith @@ "Reprocessed result: " ^ name*)
-  ) results
+    | None -> Some (r,ms')
+    | Some (SOLVED,ms) -> Some (SOLVED,ms +. ms')
+    | Some (UNSOLVED l,ms) -> match r with SOLVED -> Some (SOLVED,ms +. ms') | UNSOLVED l' -> Some (UNSOLVED (l @ l'),ms +. ms')
+    )
+  results
 
 (** Generate query reachability assertions *)
 let generate_query_reachability query =
@@ -193,7 +195,7 @@ let collect_splits queries depth =
       StringSet.iter (walk (depth - 1)) preds
     end
   in
-  walk depth "exit";
+  List.iter (fun q -> if Data_structures.is_an_exit q then walk depth q.qname) queries;
   List.partition (fun q -> StringSet.mem q.qname !visited) queries
 
 let scoped_solve_effects solver effects =
@@ -385,7 +387,7 @@ let run state timeout_ms enable_z3_simplify enable_scope =
 
   (* Run solver over the effects *)
   if enable_scope then
-    let (_, results_map) = scoped_solve_effects solver filter_effects in
+    let (effects, results_map) = scoped_solve_effects solver filter_effects in
 
     (* Generate query dependency visualization with results and timing *)
     if is_debug_enabled () then begin
@@ -397,7 +399,19 @@ let run state timeout_ms enable_z3_simplify enable_scope =
       debug_printf "  Query dependency graph written to %s\n" dot_filename
     end;
 
-    UNSOLVED []
+    (* Walk queries, find any exits that have been 'solved' *)
+    let acc = StringMap.fold (fun k (r,_) acc ->
+      if String.starts_with ~prefix:"exit" k then
+        match acc, r with
+        | UNSOLVED l, UNSOLVED l2 -> UNSOLVED (l@l2)
+        | SOLVED, _ -> SOLVED
+        | _, SOLVED -> SOLVED else acc) results_map  (UNSOLVED []) in
+
+    match acc with
+    | SOLVED -> SOLVED
+    | UNSOLVED [] -> UNSOLVED []
+    | UNSOLVED final -> UNSOLVED ([{state with effects = effects @ final }])
+
   else begin
     let (final,effects) = List.partition (fun q -> q.qname = "exit") filter_effects in
     let (effects, results_map) = solve_effects solver effects in

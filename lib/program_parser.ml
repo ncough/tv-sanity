@@ -426,7 +426,7 @@ let solve_definitions program floating =
   let trace_entry = program.name ^ "__TRACE" in
   let trace_defs = StringMap.add trace_entry (StringSet.add "entry" StringSet.empty) StringMap.empty in
 
-  let (program, _, floating, undefined, _, effs) =
+  let (program, _, floating, undefined, trace_defs, effs) =
     List.fold_left (fun (program, def_at_exit_map, floating, undefined,trace_defs,effs) block_name ->
       let block = StringMap.find block_name program.blocks in
       let undefined = StringMap.fold (fun k v acc ->
@@ -473,21 +473,6 @@ let solve_definitions program floating =
       in
       let (defs,suffix,floating,trace_defs,effs) = repeat_floating defs floating trace_defs effs block_name in
 
-      (* Store exit predecessors in effs map when processing exit block *)
-      let effs =
-        if block_name = get_exit program then begin
-          let block = get_block program block_name in
-          match block.ops with
-          | (Call c)::_ when c.name = "exit" ->
-              let traces = get_traces c.args in
-              let preds = StringSet.fold (fun trace_arg acc ->
-                StringSet.union acc (find_trace trace_arg trace_defs)
-              ) traces StringSet.empty in
-              StringMap.add "exit" (preds, block_name) effs
-          | _ -> failwith "exit structure"
-        end else effs
-      in
-
       (* Update the block with processed operations *)
       let ops = prefix @ ops @ suffix in
       let program = update_block program block_name (fun b -> {b with ops}) in
@@ -495,6 +480,25 @@ let solve_definitions program floating =
 
       (program, updated_def_map, floating, undefined,trace_defs,effs)
   ) (program, StringMap.empty, floating, StringSet.empty, trace_defs, StringMap.empty) (topo_sort program) in
+
+  (* Store exit predecessors in effs map when processing exit block *)
+  let exit_preds =
+    let block = get_block program (get_exit program) in
+    List.fold_left (fun acc pred ->
+      (* phi effects *)
+      let subst = StringMap.map (fun uses ->
+        let reduced = List.filter (fun (b,_) -> b = pred) uses in
+        match reduced with
+        | [(_,sexp)] -> sexp
+        | _ -> failwith "huh") block.phis in
+
+      (* find the trace variable *)
+      let traces = StringMap.filter (fun k _ -> is_trace k) subst in
+      let trace = match StringMap.to_list traces with [(_,Atom v)] -> v | _ -> failwith "huh2" in
+      let preds = find_trace trace trace_defs in
+      StringMap.add pred (preds,subst) acc
+    ) StringMap.empty block.preds
+  in
 
   (* Validate there are no remaining effects that couldn't be placed *)
   if floating <> [] then
@@ -507,7 +511,7 @@ let solve_definitions program floating =
       (pp_set bad_flow);
 
   (* dump_program program; *)
-  (program,StringSet.diff undefined defined_anywhere,effs)
+  (program,StringSet.diff undefined defined_anywhere,effs,exit_preds)
 
 let create_entry_operation (program : program) initial =
   let fvsl = List.map (fun pred -> free_vars pred.term) initial in
@@ -591,20 +595,20 @@ let process_program program state =
   let program = create_entry_operation program state.initial in
   let program = create_exit_operation program state.final in
   let free_ops = create_floating_operations program state.effect_q in
-  let (program,undefined,effs) = solve_definitions program free_ops in
+  let (program,undefined,effs,exits) = solve_definitions program free_ops in
   let program = add_entry_vars program undefined in
-  (program,effs)
+  (program,effs,exits)
 
 let order_effects parser_state effs =
   let entry = create_entry_effect parser_state.source_program parser_state.target_program parser_state.initial in
-  let exit = create_exit_effect parser_state.source_program parser_state.target_program parser_state.final in
+  (*let exit = create_exit_effect parser_state.source_program parser_state.target_program parser_state.final in*)
   let effects = List.map (fun ef ->
     match StringMap.find_opt ef.qname effs with
     | Some (preds,source,target) -> { ef with preds ; source_location = Some source ; target_location = Some target }
     | None ->
         Printf.printf "missing effect %s\n" ef.qname;
         failwith "missing effect "
-  ) (exit::parser_state.effect_q) in
+  ) (parser_state.effect_q) in
   entry::effects
 
 let join_effs a b =
@@ -615,6 +619,14 @@ let join_effs a b =
     | _, Some _ -> Printf.printf "Removing %s\n" k; None
     | _ -> None) a b
 
+let rec apply_subst (m: t StringMap.t) (s: sexp) =
+  match s with
+  | Atom v -> (match StringMap.find_opt v m with Some s -> s | _ -> s)
+  | List a -> List (List.map (apply_subst m) a)
+
+let apply_subst_pred (m: t StringMap.t) (s: predicate list) =
+  List.map (fun p -> {p with term = apply_subst m p.term}) s
+
 (** Parse SMT-LIB2 file and return a State object *)
 let parse_file filename : state =
   let content = In_channel.with_open_text filename In_channel.input_all in
@@ -623,15 +635,32 @@ let parse_file filename : state =
     | Ok sexps -> sexps
   in
   let state = List.fold_left parse_sexp empty_parser_state parsed in
-  let (source,effs) = process_program state.source_program state in
-  let (target,effs2) = process_program state.target_program state in
+  let (source,effs,exits) = process_program state.source_program state in
+  let (target,effs2,exits2) = process_program state.target_program state in
   let effects = order_effects state (join_effs effs effs2) in
+
+  (* mess around with exit effect here *)
+  let exit_effects = StringMap.fold (fun src_block (src_preds,src_subst) ->
+    StringMap.fold (fun tgt_block (tgt_preds,tgt_subst) acc ->
+      let preds = StringSet.inter src_preds tgt_preds in
+      if StringSet.cardinal preds = 0 then acc
+      else
+      let qname = "exit_" ^ src_block ^ "_" ^ tgt_block in
+      let req = apply_subst_pred src_subst (apply_subst_pred tgt_subst state.final) in
+      {
+        qname;
+        req;
+        ens = [];
+        preds;
+        source_location = Some src_block;
+        target_location = Some tgt_block
+    }::acc) exits2) exits [] in
 
   (* Apply bool2bv1 transformation to both programs and all effects *)
   let transformed_source = transform_program_bool2bv1 source in
   let transformed_target = transform_program_bool2bv1 target in
   let transformed_arbitrary = List.map transform_predicate_bool2bv1 state.arbitrary in
-  let transformed_effects = List.map transform_query_bool2bv1 effects in
+  let transformed_effects = List.map transform_query_bool2bv1 (exit_effects@effects) in
 
   {
     source = transformed_source;

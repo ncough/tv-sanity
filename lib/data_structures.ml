@@ -85,6 +85,9 @@ let empty_program name = {
   variables = StringMap.empty;
 }
 
+let is_an_exit q =
+  String.starts_with ~prefix:"exit" q.qname
+
 let add_block program var preds ops =
   if StringMap.mem var program.blocks then
     failwith (Printf.sprintf "Block already exists: %s" var);
@@ -242,7 +245,7 @@ let reach_exit queries =
       StringSet.iter walk query.preds
     end
   in
-  walk "exit";
+  List.iter (fun q -> if is_an_exit q then walk q.qname) queries;
   List.filter (fun q -> StringSet.mem q.qname !visited) queries
 
 let intersection idoms a b =
