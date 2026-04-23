@@ -282,16 +282,18 @@ let solve_goal solver (goal,pos) =
   result_map (fun _ -> goal) res
 
 let solve_goals solver effects =
-  assert (List.length effects = 1);
-  let ef = List.hd effects in
-  assert (ef.qname = "exit");
-  let goals = ef.req in
-  debug_printf "  Attempting to solve %d goals\n" (List.length goals);
-  let igoals = List.mapi (fun pos goal -> (goal,pos)) goals in
-  match result_bind (UNSOLVED igoals) (solve_goal solver) with
-  | SOLVED -> SOLVED
-  | UNSOLVED [] -> UNSOLVED []
-  | UNSOLVED req -> UNSOLVED [{ef with req}]
+  let res = List.map (fun ef ->
+    let goals = ef.req in
+    debug_printf "  Attempting to solve %d goals\n" (List.length goals);
+    let igoals = List.mapi (fun pos goal -> (goal,pos)) goals in
+    match result_bind (UNSOLVED igoals) (solve_goal solver) with
+    | SOLVED -> SOLVED
+    | UNSOLVED [] -> UNSOLVED []
+    | UNSOLVED req -> UNSOLVED [{ef with req}]) effects in
+  List.fold_left (fun acc res ->
+    match acc, res with
+    | UNSOLVED l, UNSOLVED l' -> UNSOLVED (l@l')
+    | _ -> SOLVED) (UNSOLVED []) res
 
 (** Generate GraphViz DOT for query dependencies with results and timing *)
 let generate_query_dependency_dot queries results_map =
@@ -413,7 +415,7 @@ let run state timeout_ms enable_z3_simplify enable_scope =
     | UNSOLVED final -> UNSOLVED ([{state with effects = effects @ final }])
 
   else begin
-    let (final,effects) = List.partition (fun q -> q.qname = "exit") filter_effects in
+    let (final,effects) = List.partition Data_structures.is_an_exit filter_effects in
     let (effects, results_map) = solve_effects solver effects in
 
     (* Generate query dependency visualization with results and timing *)
