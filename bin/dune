@@ -1,4 +1,4 @@
 (executable
- (public_name tv-sanity)
+ (public_name tv-sanity-scoped)
  (name main)
  (libraries tv_sanity))

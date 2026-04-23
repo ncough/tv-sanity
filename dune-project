@@ -1,6 +1,6 @@
 (lang dune 3.19)
 
-(name tv-sanity)
+(name tv-sanity-scoped)
 
 (generate_opam_files true)
 
@@ -16,7 +16,7 @@
 (documentation https://url/to/documentation)
 
 (package
- (name tv-sanity)
+ (name tv-sanity-scoped)
  (synopsis "OCaml translation of SMT-LIB2 parser and visualizer")
  (description "A translation of the Python SMT-LIB2 parsing and visualization tool to OCaml")
  (depends 
