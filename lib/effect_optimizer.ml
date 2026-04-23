@@ -127,7 +127,7 @@ let rec dominator_solve count depth solver eff doms solved results imm_exit =
       let end_time = Unix.gettimeofday () in
       let ms = ((end_time -. start_time) *. 1000.0) in
       debug_printf "UNRCH in %.2fms\n" ms;
-      results := add_result !results name (SOLVED,ms);
+      results := add_result !results name (UNSOLVED [],ms);
       ""
   | _ ->
       send_to_solver solver "(push)\n";

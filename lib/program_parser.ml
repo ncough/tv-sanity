@@ -484,17 +484,25 @@ let solve_definitions program floating =
   (* Store exit predecessors in effs map when processing exit block *)
   let exit_preds =
     let block = get_block program (get_exit program) in
+
+    let default_trace = match block.ops with
+    | (Call c)::_ when c.name = "exit" ->
+        let traces = get_traces c.args in
+        (match StringSet.to_list traces with [v] -> v | _ -> failwith "no clear trace var")
+    | _ -> failwith "bad exit block" in
+
     List.fold_left (fun acc pred ->
       (* phi effects *)
       let subst = StringMap.map (fun uses ->
         let reduced = List.filter (fun (b,_) -> b = pred) uses in
         match reduced with
         | [(_,sexp)] -> sexp
-        | _ -> failwith "huh") block.phis in
+        | _ -> failwith "Phi with multiple values for the same block") block.phis in
 
       (* find the trace variable *)
       let traces = StringMap.filter (fun k _ -> is_trace k) subst in
-      let trace = match StringMap.bindings traces with [(_,Atom v)] -> v | _ -> failwith "huh2" in
+      let trace = match StringMap.bindings traces with [(_,Atom v)] -> v | _ -> default_trace
+      in
       let preds = find_trace trace trace_defs in
       StringMap.add pred (preds,subst) acc
     ) StringMap.empty block.preds
