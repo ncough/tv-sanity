@@ -110,6 +110,7 @@ let rec dominator_solve count depth solver eff doms solved results imm_exit =
   flush_all ();
   count := !count + 1;
   let start_time = Unix.gettimeofday () in
+  send_to_solver solver (Printf.sprintf "\n; %s\n" eff.qname);
   send_to_solver solver "(push)\n";
   let req_combined = generate_conjunction eff.req in
   let ens_combined = generate_conjunction eff.ens in
@@ -196,10 +197,23 @@ let collect_splits queries depth =
     end
   in
   List.iter (fun q -> if Data_structures.is_an_exit q then walk depth q.qname) queries;
+  let changed = ref true in
+  visited := StringSet.remove "entry" !visited;
+  while !changed do
+    changed := false;
+    List.iter (fun q ->
+      if StringSet.mem q.qname !visited then () else
+        StringSet.iter (fun p ->
+          if StringSet.mem p !visited then begin
+            changed := true;
+            visited := StringSet.remove p !visited;
+          end) q.preds
+    ) queries
+  done;
   List.partition (fun q -> StringSet.mem q.qname !visited) queries
 
 let scoped_solve_effects solver effects =
-  let (exits,effects) = collect_splits effects 1 in
+  let (exits,effects) = collect_splits effects 3 in
   let topo_effects = Data_structures.query_topo_sort effects in
   debug_printf "  Processing %d effects, %d split\n" (List.length topo_effects) (List.length exits);
   let doms = Data_structures.dom_tree topo_effects in

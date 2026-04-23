@@ -100,13 +100,34 @@ let transform_query_bool2bv1 query =
 
 let build_predicate term = { term ; sat = None }
 
-let build_query qname req ens = {
+let rec until a l =
+  match l with
+  | b::_ when a = b -> ([],l)
+  | b::r ->
+      let (pre,post) = until a r in
+      (b::pre,post)
+  | [] -> ([],[])
+
+let unpack_name name =
+  let regex = Str.regexp_string "___" in
+  let (pre,post) = until "srcSTMT" (Str.split regex name) in
+  let name = String.concat "___" pre in
+  match post with
+  | ["srcSTMT" ; src_block; _ ; _ ; _ ; tgt_block; _ ; _ ; _ ; num] ->
+      (name ^ "_" ^ num, "source__" ^ src_block ^ "_done", "target__" ^ tgt_block ^ "_done")
+  | l ->
+      Printf.printf "%s\n" (String.concat "," l);
+      failwith "damn"
+
+let build_query qname req ens =
+  let (qname, src, tgt) = unpack_name qname in
+{
   qname;
   req = List.map build_predicate req;
   ens = List.map build_predicate ens;
   preds = StringSet.empty;
-  source_location = None;
-  target_location = None;
+  source_location = Some src;
+  target_location = Some tgt;
 }
 
 (** Utility to update a program based on a entity name prefix *)
@@ -612,7 +633,7 @@ let order_effects parser_state effs =
   (*let exit = create_exit_effect parser_state.source_program parser_state.target_program parser_state.final in*)
   let effects = List.map (fun ef ->
     match StringMap.find_opt ef.qname effs with
-    | Some (preds,source,target) -> { ef with preds ; source_location = Some source ; target_location = Some target }
+    | Some (preds,_,_) -> { ef with preds }
     | None ->
         Printf.printf "missing effect %s\n" ef.qname;
         failwith "missing effect "
