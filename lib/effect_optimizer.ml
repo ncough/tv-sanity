@@ -105,6 +105,63 @@ let shortcuts (eff : query) results =
   ) eff.preds (0,0,0) in
   (unsat > 0, unknown > 0, unsat = 0 && unknown = 0 && sat > 0)
 
+let  result_join a b =
+  match a, b with
+  | UNSOLVED l, UNSOLVED l' -> UNSOLVED (l@l')
+  | _ -> SOLVED
+
+let and_split term =
+  match term with
+  | Sexplib0.Sexp.List (Sexplib0.Sexp.Atom "and"::r) -> r
+  | _ -> [term]
+
+let try_recovery solver eff =
+  let reqs = List.flatten (List.map and_split (List.map (fun p -> p.term) eff.req)) in
+  let rec run_rounds round pending =
+    match pending with
+    | [] -> UNSOLVED []
+    | _ ->
+      Printf.printf "    Recovery round %d (%d predicates)\n" round (List.length pending);
+      flush_all ();
+      let unknown_preds = ref [] in
+      let any_unsat = ref false in
+      let sat_found = ref false in
+      List.iter (fun pred ->
+        if not !sat_found then begin
+          let term = pp_sexp pred in
+          Printf.printf "    Focus on %s\n" term;
+          flush_all ();
+          let start_time = Unix.gettimeofday () in
+          send_to_solver solver "(push)\n";
+          send_to_solver solver (Printf.sprintf "(assert (not %s))\n" term);
+          send_to_solver solver "(check-sat)\n";
+          let resp = read_solver_response solver in
+          let end_time = Unix.gettimeofday () in
+          let ms = ((end_time -. start_time) *. 1000.0) in
+          (match resp with
+          | "sat" ->
+              Printf.printf "      SAT in %.2fms\n" ms;
+              sat_found := true
+          | "unsat" ->
+              Printf.printf "      UNSAT %.2fms\n" ms;
+              any_unsat := true;
+              send_to_solver solver (Printf.sprintf "(assert %s)\n" term)
+          | _ ->
+              Printf.printf "      UNKNOWN %.2fms\n" ms;
+              unknown_preds := pred :: !unknown_preds);
+          send_to_solver solver "(pop)\n"
+        end
+      ) pending;
+      if !sat_found then SOLVED
+      else if !any_unsat then
+        (* Progress made — retry only the unknowns *)
+        run_rounds (round + 1) (List.rev !unknown_preds)
+      else
+        (* No progress — all remaining predicates timed out *)
+        UNSOLVED [eff]
+  in
+  run_rounds 1 reqs
+
 let rec dominator_solve count depth solver eff doms solved results imm_exit =
   debug_printf "  [%d,%d] %s - " !count depth eff.qname;
   flush_all ();
@@ -150,6 +207,12 @@ let rec dominator_solve count depth solver eff doms solved results imm_exit =
           let end_time = Unix.gettimeofday () in
           let ms = ((end_time -. start_time) *. 1000.0) in
           debug_printf "%s in %.2fms\n" (if suc then "UNSAT" else "UNKNOWN") ms;
+          let suc = if suc then suc else
+            match try_recovery solver eff with
+            | UNSOLVED [] -> true
+            | _ -> false
+          in
+
           results := add_result !results name (UNSOLVED (if suc then [] else [eff]),ms);
           if suc then solved := {eff with req = []; ens = eff.req @ eff.ens} :: !solved;
           let cond = if suc then
@@ -183,6 +246,125 @@ let rec dominator_solve count depth solver eff doms solved results imm_exit =
           in
           send_to_solver solver guarded;
           guarded
+
+let scoped_probe solver assertions =
+  send_to_solver solver "(push)\n";
+  send_to_solver solver assertions;
+  send_to_solver solver "(check-sat)\n";
+  let resp = read_solver_response solver in
+  send_to_solver solver "(pop)\n";
+  resp
+
+let rec dominator_solve_uncond count depth solver eff doms solved results imm_exit =
+  debug_printf "  [%d,%d] %s - " !count depth eff.qname;
+  flush_all ();
+  count := !count + 1;
+
+  let req_combined = generate_conjunction eff.req in
+  let ens_combined = generate_conjunction eff.ens in
+  let reachable = generate_query_reachability eff in
+  let name = eff.qname in
+  let start_time = Unix.gettimeofday () in
+
+  let req_assert = Printf.sprintf "(assert (not %s))\n" req_combined in
+
+  send_to_solver solver (Printf.sprintf "\n; Starting %s\n" eff.qname);
+  let uncond_req = scoped_probe solver req_assert in
+  let outcome = if uncond_req = "unsat" then "TRIVIAL" else begin
+    send_to_solver solver (Printf.sprintf "; Path condition?\n");
+    send_to_solver solver "(push)\n";
+    send_to_solver solver (Printf.sprintf "(assert %s)\n" reachable);
+    send_to_solver solver "(check-sat)\n";
+    match read_solver_response solver with
+    | "unsat" -> "UNRCH"
+    | _ ->
+        match scoped_probe solver req_assert with
+        | "sat" -> "SAT"
+        | "unsat" -> "UNSAT"
+        | _ -> "UNKNOWN"
+  end in
+
+  match outcome with
+  (* No reason to explore children, either we can't reach this point or the requirements don't hold *)
+  | "UNRCH"
+  | "SAT" ->
+      send_to_solver solver "(pop)\n";
+      let end_time = Unix.gettimeofday () in
+      let ms = ((end_time -. start_time) *. 1000.0) in
+      debug_printf "%s in %.2fms\n" outcome ms;
+      let v = if outcome = "UNRCH" then UNSOLVED [] else SOLVED in
+      results := add_result !results name (v,ms);
+      send_to_solver solver (Printf.sprintf "; Done %s\n" outcome);
+      None
+
+  | "TRIVIAL" (* Can show req & ens without a path condition, *)
+  | "UNSAT" (* Can show req given path condition, ens without *)
+  | "UNKNOWN" -> (* Can't show req *)
+      let end_time = Unix.gettimeofday () in
+      let ms = ((end_time -. start_time) *. 1000.0) in
+      debug_printf "%s in %.2fms\n" outcome ms;
+      let v = if outcome = "UNKNOWN" then UNSOLVED [eff] else UNSOLVED [] in
+      results := add_result !results name (v,ms);
+      send_to_solver solver (Printf.sprintf "; Done %s\n" outcome);
+
+      (* Information gained by children *)
+      let new_info = if outcome = "UNKNOWN" then
+        Printf.sprintf "(assert (=> %s %s))\n" req_combined ens_combined
+      else
+        Printf.sprintf "(assert %s)\n(assert %s)\n" req_combined ens_combined
+      in
+      send_to_solver solver new_info;
+
+      (* Walk children (already in RPO) *)
+      let sub_queries = match StringMap.find_opt eff.qname doms with Some v -> v | _ -> [] in
+      let sub_results = List.filter_map (fun query ->
+        dominator_solve_uncond count (depth + 1) solver query doms solved results imm_exit
+      ) sub_queries in
+      let inner_real = (String.concat "" (List.map fst sub_results)) in
+      let inner_spec = (String.concat " " (List.map snd sub_results)) in
+
+      (* Exit queries *)
+      (match StringMap.find_opt eff.qname imm_exit with
+      | Some exit ->
+          debug_printf "  EXIT SPLIT START\n";
+          List.iter (fun exit ->
+            ignore (dominator_solve count (depth + 1) solver exit doms solved results imm_exit)
+          ) exit;
+          debug_printf "  EXIT SPLIT DONE\n";
+      | None -> ());
+
+      send_to_solver solver (Printf.sprintf "\n; Back to %s\n" eff.qname);
+
+      (* TRIVIAL
+         - Current stack is req & ens, no current path condition
+         - Know these hold regardless of condition
+         - Just need to extend speculative predicates
+       *)
+      if outcome = "TRIVIAL" then
+        let spec = Printf.sprintf "%s %s %s" inner_spec req_combined ens_combined in
+        Some (inner_real,spec)
+      else begin
+        (* In a scope, conditional on reachability.
+           Need to pop this and re-expose useful information. *)
+        send_to_solver solver "(pop)\n";
+
+        (* Wrap any speculative in path condition *)
+        let spec = if outcome = "UNSAT" then inner_spec ^ " " ^ req_combined else inner_spec in
+        let wrapped_spec = Printf.sprintf "(assert (=> %s (and %s)))\n" reachable spec in
+
+        (* Send through properties that are not path conditional *)
+        let current = if outcome = "UNSAT" then
+          Printf.sprintf "(assert %s)\n" ens_combined
+        else
+          Printf.sprintf "(assert (=> %s %s))\n" req_combined ens_combined
+        in
+        let outer_real = String.concat "" [wrapped_spec;current;inner_real] in
+        send_to_solver solver outer_real;
+
+        Some(outer_real,"true")
+      end
+
+  | _ -> failwith "unreachable"
 
 let collect_splits queries depth =
   let query_map = List.fold_left (fun acc query ->
@@ -229,7 +411,7 @@ let scoped_solve_effects solver effects =
   )) q.preds acc
   ) StringMap.empty exits in
 
-  let (_,ms)= get_time (fun _ -> dominator_solve count 0 solver entry doms solved results imm_exit) in
+  let (_,ms)= get_time (fun _ -> dominator_solve_uncond count 0 solver entry doms solved results imm_exit) in
   Printf.printf "SOLVED IN %.2fms\n" ms;
   (!solved, !results)
 
