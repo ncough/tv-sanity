@@ -286,8 +286,7 @@ let rec dominator_solve_uncond count depth solver eff doms solved results imm_ex
 
   match outcome with
   (* No reason to explore children, either we can't reach this point or the requirements don't hold *)
-  | "UNRCH"
-  | "SAT" ->
+  | "UNRCH" ->
       send_to_solver solver "(pop)\n";
       let end_time = Unix.gettimeofday () in
       let ms = ((end_time -. start_time) *. 1000.0) in
@@ -297,19 +296,22 @@ let rec dominator_solve_uncond count depth solver eff doms solved results imm_ex
       send_to_solver solver (Printf.sprintf "; Done %s\n" outcome);
       None
 
+  | "SAT" (* Req doesn't hold *)
   | "TRIVIAL" (* Can show req & ens without a path condition, *)
   | "UNSAT" (* Can show req given path condition, ens without *)
   | "UNKNOWN" -> (* Can't show req *)
       let end_time = Unix.gettimeofday () in
       let ms = ((end_time -. start_time) *. 1000.0) in
       debug_printf "%s in %.2fms\n" outcome ms;
-      let v = if outcome = "UNKNOWN" then UNSOLVED [eff] else UNSOLVED [] in
+      let v = if outcome = "UNKNOWN" then UNSOLVED [eff] else if outcome = "SAT" then SOLVED else UNSOLVED [] in
       results := add_result !results name (v,ms);
       send_to_solver solver (Printf.sprintf "; Done %s\n" outcome);
 
       (* Information gained by children *)
       let new_info = if outcome = "UNKNOWN" then
         Printf.sprintf "(assert (=> %s %s))\n" req_combined ens_combined
+      else if outcome = "SAT" then
+        ""
       else
         Printf.sprintf "(assert %s)\n(assert %s)\n" req_combined ens_combined
       in
@@ -327,9 +329,16 @@ let rec dominator_solve_uncond count depth solver eff doms solved results imm_ex
       (match StringMap.find_opt eff.qname imm_exit with
       | Some exit ->
           debug_printf "  EXIT SPLIT START\n";
+          if outcome = "TRIVIAL" then begin
+            send_to_solver solver "(push)\n";
+            send_to_solver solver (Printf.sprintf "(assert %s)\n" reachable)
+          end;
           List.iter (fun exit ->
-            ignore (dominator_solve count (depth + 1) solver exit doms solved results imm_exit)
+            ignore (dominator_solve_uncond count (depth + 1) solver exit doms solved results imm_exit)
           ) exit;
+          if outcome = "TRIVIAL" then begin
+            send_to_solver solver "(pop)\n";
+          end;
           debug_printf "  EXIT SPLIT DONE\n";
       | None -> ());
 
@@ -343,7 +352,10 @@ let rec dominator_solve_uncond count depth solver eff doms solved results imm_ex
       if outcome = "TRIVIAL" then
         let spec = Printf.sprintf "%s %s %s" inner_spec req_combined ens_combined in
         Some (inner_real,spec)
-      else begin
+      else if outcome = "SAT" then begin
+        send_to_solver solver "(pop)\n";
+        None
+      end else begin
         (* In a scope, conditional on reachability.
            Need to pop this and re-expose useful information. *)
         send_to_solver solver "(pop)\n";
