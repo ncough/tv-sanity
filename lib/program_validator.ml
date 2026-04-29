@@ -5,29 +5,25 @@ open Utilities
 open Smtlib_output
 open Incremental_solver
 
-(** Generate pairwise conjunction check for predecessor exclusivity *)
+(** Build an 'or' sexp over all pairwise 'and' combinations of preds. *)
 let generate_pairwise_check preds =
-  let rec generate_pairs = function
-    | [] -> []
+  let rec pairs = function
+    | []     -> []
     | x :: xs ->
-        List.map (fun y -> Printf.sprintf "(and %s %s)" x y) xs @ generate_pairs xs
+        List.map (fun y ->
+          Sexplib0.Sexp.List [Sexplib0.Sexp.Atom "and";
+                              Sexplib0.Sexp.Atom x;
+                              Sexplib0.Sexp.Atom y]
+        ) xs @ pairs xs
   in
-  match generate_pairs preds with
-  | [] -> None
-  | pairs -> Some (Printf.sprintf "(or %s)" (String.concat " " pairs))
+  match pairs preds with
+  | []    -> None
+  | [one] -> Some one
+  | many  -> Some (Sexplib0.Sexp.List (Sexplib0.Sexp.Atom "or" :: many))
 
-(** Validate that all blocks have mutually exclusive predecessors for a single program *)
 let validate_program_exclusivity (program : program) timeout_ms =
   debug_printf "Starting predecessor exclusivity validation for %s\n" program.name;
 
-  (* Build base assertions for this program only *)
-  let buffer = Buffer.create 4096 in
-  Buffer.add_string buffer (generate_block_assertions program program.name);
-  Buffer.add_string buffer (generate_assignment_assertions program);
-
-  let base_query = Buffer.contents buffer in
-
-  (* Create a minimal state with just this program *)
   let minimal_state = {
     source = program;
     target = empty_program "dummy";
@@ -36,27 +32,28 @@ let validate_program_exclusivity (program : program) timeout_ms =
     funs = [];
   } in
 
-  (* Start incremental solver *)
-  let solver = begin_solver minimal_state timeout_ms base_query in
+  let solver = begin_solver minimal_state timeout_ms in
+  emit_block_assertions solver program program.name;
+  emit_assignment_assertions solver program;
 
-  (* Check each block's predecessors *)
   StringMap.iter (fun block_name block ->
     match block.preds with
-    | [] | [_] -> () (* 0 or 1 predecessor is always valid *)
+    | [] | [_] -> ()
     | preds when List.length preds >= 2 ->
         (match generate_pairwise_check preds with
         | None -> ()
-        | Some pairwise_expr ->
-            let assertion = Printf.sprintf "(assert %s)\n" pairwise_expr in
-            (* Check if any two predecessors can be true simultaneously *)
-            let result = scoped_solve ~cmt:("Check " ^ block_name) solver assertion in
+        | Some pairwise_sexp ->
+            let result = scoped_solve ~cmt:("Check " ^ block_name) solver
+              (fun s -> s.assert_ pairwise_sexp) in
             (match result with
             | SOLVED ->
-                debug_printf "WARNING: Block %s has non-exclusive predecessors: %s\n" block_name (String.concat ", " preds)
+                debug_printf "WARNING: Block %s has non-exclusive predecessors: %s\n"
+                  block_name (String.concat ", " preds)
             | UNSOLVED _ ->
-                debug_printf "  Block %s: predecessors are mutually exclusive\n" block_name))
+                debug_printf "  Block %s: predecessors are mutually exclusive\n"
+                  block_name))
     | _ -> ()
   ) program.blocks;
 
-  close_solver solver;
+  solver.close ();
   debug_printf "Finished predecessor exclusivity validation for %s\n" program.name
