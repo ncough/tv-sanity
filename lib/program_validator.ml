@@ -17,7 +17,7 @@ let generate_pairwise_check preds =
   | pairs -> Some (Printf.sprintf "(or %s)" (String.concat " " pairs))
 
 (** Validate that all blocks have mutually exclusive predecessors for a single program *)
-let validate_program_exclusivity program timeout_ms =
+let validate_program_exclusivity (program : program) timeout_ms =
   debug_printf "Starting predecessor exclusivity validation for %s\n" program.name;
 
   (* Build base assertions for this program only *)

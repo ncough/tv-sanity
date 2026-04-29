@@ -13,7 +13,6 @@ let result_of_cvc goal exit_status output =
         (* CVC5 timeout - treat as unsolved *)
         UNSOLVED [goal]
     | _ ->
-        Printf.printf "CVC5 Error: %s\n" output;
         UNSOLVED [goal]
 
 (** Apply CVC5 tactic to a goal with state context *)

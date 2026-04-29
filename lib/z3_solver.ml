@@ -36,32 +36,33 @@ let parse_z3_goals output =
   List.rev !goals
 
 (** Analyze Z3 output and determine result *)
-let analyze_z3_output output =
+let analyze_z3_output goal output =
   match String.trim output with
   | "sat" -> SOLVED
   | "unsat" -> UNSOLVED []
   | s when String.starts_with ~prefix:"(goals" s ->
       UNSOLVED (parse_z3_goals output)
+  | "unknown" -> UNSOLVED [goal]
   | _ ->
       failwith ("Z3 error: " ^ output)
 
 (** Apply Z3 tactic to a goal with state context *)
-let apply_tactic state tactic goal =
+let apply_tactic state tactic goal timeout_ms =
   with_temp_file "z3_tactic" ".smt2" (fun temp_file ->
     let content = Printf.sprintf "%s\n%s\n" goal tactic in
     create_smtlib_file_with_content state content temp_file;
-    let z3_cmd = Printf.sprintf "%s '%s'" z3_path temp_file in
+    let z3_cmd = Printf.sprintf "%s -t:%d '%s'" z3_path timeout_ms temp_file in
     let (exit_status, output) = run_command z3_cmd in
     match exit_status with
-    | Unix.WEXITED 0 -> analyze_z3_output output
+    | Unix.WEXITED 0 -> analyze_z3_output goal output
     | _ ->
         debug_printf "Z3 failed with exit status and output:\n%s\n" output;
         failwith "Z3 execution failed"
   )
 
 (** Z3 satisfiability check *)
-let check_sat state goal =
-  apply_tactic state "(check-sat)" goal
+let check_sat state goal timeout_ms =
+  apply_tactic state "(check-sat)" goal timeout_ms
 
 (** Z3 simplification tactic *)
 let simplify state goal =

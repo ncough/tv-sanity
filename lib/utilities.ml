@@ -7,6 +7,7 @@ module StringSet = Set.Make(String)
 
 let cvc5_path = "cvc5"
 let z3_path = "z3"
+let bitwuzla_path = "bitwuzla"
 
 let set_of_map a = a |> StringMap.to_seq |> Seq.map fst |> StringSet.of_seq
 

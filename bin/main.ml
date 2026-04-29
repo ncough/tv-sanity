@@ -6,7 +6,7 @@ open Tv_sanity.Utilities
 open Tv_sanity.Program_validator
 
 (** Parse and process a single SMT-LIB2 file with main pipeline *)
-let process_file filename timeout_ms disable_z3_simplify validate_preds enable_scope  =
+let process_file filename timeout_ms disable_z3_simplify validate_preds enable_scope enable_multi_solver enable_cascade_solver =
   try
     let state = parse_file filename in
     let base_filename = Filename.remove_extension filename in
@@ -23,7 +23,7 @@ let process_file filename timeout_ms disable_z3_simplify validate_preds enable_s
     (* Apply copy/constant propagation *)
     let state = Tv_sanity.Copy_prop.transform_state state in
 
-    let r = solve state timeout_ms ~enable_z3_simplify:(not disable_z3_simplify) enable_scope in
+    let r = solve state timeout_ms ~enable_z3_simplify:(not disable_z3_simplify) enable_scope enable_multi_solver enable_cascade_solver in
     Printf.printf "%s\n" (pp_result r); true
   with
   | exn ->
@@ -40,6 +40,8 @@ let () =
   let validate_preds = ref false in
   let disable_z3_simplify = ref false in
   let enable_scope = ref false in
+  let enable_multi_solver = ref false in
+  let enable_cascade_solver = ref false in
 
   (* Argument specification *)
   let spec = [
@@ -53,6 +55,10 @@ let () =
      " Disable Z3 simplification before effect optimization");
     ("--scope", Arg.Set enable_scope,
      " Enable scoped solver");
+    ("--multi-solver", Arg.Set enable_multi_solver,
+     " Use CVC5 + Z3 + Bitwuzla incremental solvers in parallel");
+    ("--cascade-solver", Arg.Set enable_cascade_solver,
+     " Try Bitwuzla, then Z3, then CVC5; stop on first sat/unsat");
   ] in
 
   let usage_msg = Printf.sprintf "Usage: %s [options] <smt2_file>\nOptions:" Sys.argv.(0) in
@@ -70,7 +76,7 @@ let () =
       Arg.usage spec usage_msg;
       exit 1
   | [filename] ->
-      if process_file filename !timeout_ms !disable_z3_simplify !validate_preds !enable_scope then
+      if process_file filename !timeout_ms !disable_z3_simplify !validate_preds !enable_scope !enable_multi_solver !enable_cascade_solver then
         exit 0
       else
         exit 1

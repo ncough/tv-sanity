@@ -676,10 +676,11 @@ let parse_file filename : state =
       else
       let qname = "exit_" ^ src_block ^ "_" ^ tgt_block in
       let req = apply_subst_pred src_subst (apply_subst_pred tgt_subst state.final) in
+      let false_predicate = { term = Atom "false"; sat = None } in
       {
         qname;
         req;
-        ens = [];
+        ens = [false_predicate];
         preds;
         source_location = Some src_block;
         target_location = Some tgt_block

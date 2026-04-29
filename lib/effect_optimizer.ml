@@ -106,14 +106,41 @@ let shortcuts (eff : query) results =
   (unsat > 0, unknown > 0, unsat = 0 && unknown = 0 && sat > 0)
 
 let scoped_probe solver assertions =
-  send_to_solver solver "(push)\n";
+  push_solver solver;
   send_to_solver solver assertions;
-  send_to_solver solver "(check-sat)\n";
-  let resp = read_solver_response solver in
-  send_to_solver solver "(pop)\n";
+  let resp = check_solver solver in
+  pop_solver solver;
   resp
 
-let rec dominator_solve count depth solver eff doms solved results imm_exit =
+(* Walk a sexp, distributing over 'and' and collecting antecedents of '=>',
+   then try to solve each leaf expression given accumulated facts + req terms.
+   Returns the list of leaf expressions that could not be proven (to be assumed). *)
+let collect_assumed solver req_sexps =
+  let solved_all = ref true in
+  let rec walk facts sexp =
+    match sexp with
+    | Sexplib0.Sexp.List (Sexplib0.Sexp.Atom "and" :: conjuncts) ->
+        List.iter (walk facts) conjuncts
+    | Sexplib0.Sexp.List (Sexplib0.Sexp.Atom "=>" :: [antecedent; consequent]) ->
+        walk (facts @ [sexp_to_smtlib antecedent]) consequent
+    | leaf ->
+        let expr_str = sexp_to_smtlib leaf in
+        let asserts = String.concat "" (List.map (Printf.sprintf "(assert %s)\n") facts) in
+        let neg = Printf.sprintf "(assert (not %s))\n" expr_str in
+        let t0 = Unix.gettimeofday () in
+        let result = scoped_probe solver (asserts ^ neg) in
+        let ms = (Unix.gettimeofday () -. t0) *. 1000.0 in
+        if result <> "unsat" then begin
+          let extra = Printf.sprintf "(check-sat-assuming (%s (not %s)))\n" (String.concat " " facts) expr_str in
+          dump_version ~extra solver "hard";
+          debug_printf "\n      [hard] %s: %s in %.2fms\n" result expr_str ms;
+          solved_all := false;
+        end
+  in
+  List.iter (walk []) req_sexps;
+  !solved_all
+
+let rec dominator_solve count depth solver eff doms results imm_exit =
   debug_printf "  [%d,%d] %s - " !count depth eff.qname;
   flush_all ();
   count := !count + 1;
@@ -124,28 +151,32 @@ let rec dominator_solve count depth solver eff doms solved results imm_exit =
   let name = eff.qname in
   let start_time = Unix.gettimeofday () in
   let req_assert = Printf.sprintf "(assert (not %s))\n" req_combined in
+  let reach_str = Printf.sprintf "(assert %s)\n" reachable in
 
   (* Speculative check for req, falling back to path-sensitive *)
   send_to_solver solver (Printf.sprintf "\n; Starting %s\n" eff.qname);
   let uncond_req = scoped_probe solver req_assert in
   let outcome = if uncond_req = "unsat" then "TRIVIAL" else begin
     send_to_solver solver (Printf.sprintf "; Path condition?\n");
-    send_to_solver solver "(push)\n";
-    send_to_solver solver (Printf.sprintf "(assert %s)\n" reachable);
-    send_to_solver solver "(check-sat)\n";
-    match read_solver_response solver with
+    push_solver solver;
+    send_to_solver solver reach_str;
+    match check_solver solver with
     | "unsat" -> "UNRCH"
     | _ ->
         match scoped_probe solver req_assert with
         | "sat" -> "SAT"
         | "unsat" -> "UNSAT"
-        | _ -> "UNKNOWN"
+        | _ -> begin
+          (* Last attempt to make this work, otherwise give up *)
+          let solved = collect_assumed solver (List.map (fun p -> p.term) eff.req) in
+          if solved then "UNSAT" else failwith "UNKNOWN"
+        end
   end in
 
   match outcome with
   (* No reason to explore children, we can't reach this point *)
   | "UNRCH" ->
-      send_to_solver solver "(pop)\n";
+      pop_solver solver;
       let end_time = Unix.gettimeofday () in
       let ms = ((end_time -. start_time) *. 1000.0) in
       debug_printf "%s in %.2fms\n" outcome ms;
@@ -155,83 +186,63 @@ let rec dominator_solve count depth solver eff doms solved results imm_exit =
 
   | "SAT" (* req doesn't hold, need to keep walking in case of exit *)
   | "TRIVIAL" (* Can show req & ens without a path condition *)
-  | "UNSAT" (* Can show req given path condition, ens without *)
-  | "UNKNOWN" -> (* Can't show req *)
+  | "UNSAT" -> (* Can't show req *)
       let end_time = Unix.gettimeofday () in
       let ms = ((end_time -. start_time) *. 1000.0) in
       debug_printf "%s in %.2fms\n" outcome ms;
-      let v = if outcome = "UNKNOWN" then UNSOLVED [eff] else if outcome = "SAT" then SOLVED else UNSOLVED [] in
+      let v = if outcome = "SAT" then SOLVED else UNSOLVED [] in
       results := add_result !results name (v,ms);
       send_to_solver solver (Printf.sprintf "; Done %s\n" outcome);
 
       (* Information gained by children, they get path condition for free *)
-      let new_info = if outcome = "UNKNOWN" then
-        Printf.sprintf "(assert (=> %s %s))\n" req_combined ens_combined
-      else if outcome = "SAT" then
+      let new_info = if outcome = "SAT" then
         ""
       else
         Printf.sprintf "(assert %s)\n(assert %s)\n" req_combined ens_combined
       in
       send_to_solver solver new_info;
 
-      (* Walk children (already in RPO), collect up their global and speculative results *)
+      (* Walk children, threading child_state through so each sibling sees the previous
+         sibling's outer_real (mirroring what the incremental solver sees). *)
       let sub_queries = match StringMap.find_opt eff.qname doms with Some v -> v | _ -> [] in
       let sub_results = List.filter_map (fun query ->
-        dominator_solve count (depth + 1) solver query doms solved results imm_exit
+        dominator_solve count (depth + 1) solver query doms results imm_exit
       ) sub_queries in
-      let inner_global = (String.concat "" (List.map fst sub_results)) in
-      let inner_spec = (String.concat " " (List.map snd sub_results)) in
 
-      (* Walk specialised exit queries with path condition, ignore results *)
       (match StringMap.find_opt eff.qname imm_exit with
       | Some exit ->
           debug_printf "  EXIT SPLIT START\n";
           if outcome = "TRIVIAL" then begin
-            (* Only need the path condition if we have done a speculative solve *)
-            send_to_solver solver "(push)\n";
-            send_to_solver solver (Printf.sprintf "(assert %s)\n" reachable)
+            push_solver solver;
+            send_to_solver solver reach_str
           end;
           List.iter (fun exit ->
-            ignore (dominator_solve count (depth + 1) solver exit doms solved results imm_exit)
+            ignore (dominator_solve count (depth + 1) solver exit doms results imm_exit)
           ) exit;
-          if outcome = "TRIVIAL" then begin
-            send_to_solver solver "(pop)\n";
-          end;
+          if outcome = "TRIVIAL" then
+            pop_solver solver;
           debug_printf "  EXIT SPLIT DONE\n";
       | None -> ());
 
       send_to_solver solver (Printf.sprintf "\n; Back to %s\n" eff.qname);
-
+      let inner_global = (String.concat "" (List.map fst sub_results)) in
+      let inner_spec = if List.length sub_results = 0 then "true" else (String.concat " " (List.map snd sub_results)) in
+      let spec = Printf.sprintf "%s %s" inner_spec req_combined in
+      let global = Printf.sprintf "%s(assert %s)\n" inner_global ens_combined in
       if outcome = "TRIVIAL" then
         (* Current stack is req & ens, no path condition. Must hold in parent, so share scope. *)
         (* Add learnt information to speculative globals *)
-        let spec = Printf.sprintf "%s %s %s" inner_spec req_combined ens_combined in
-        Some (inner_global,spec)
+        Some (global,spec)
       else if outcome = "SAT" then begin
         (* Stack holds nothing, just leave. No meaningful information to return. *)
-        send_to_solver solver "(pop)\n";
+        pop_solver solver;
         None
       end else begin
         (* In a scope, conditional on reachability. Need to pop this and re-expose useful information. *)
-        (* TODO: Technically re-exposed information can wait to the next solve, but its easy to do here. *)
-        send_to_solver solver "(pop)\n";
-
-        (* Wrap req and inner speculative in path condition *)
-        let spec = if outcome = "UNSAT" then inner_spec ^ " " ^ req_combined else inner_spec in
-        let wrapped_spec = Printf.sprintf "(assert (=> %s (and %s)))\n" reachable spec in
-
-        (* ens doesn't need to be wrapped, given SSA form *)
-        let current = if outcome = "UNSAT" then
-          Printf.sprintf "(assert %s)\n" ens_combined
-        else
-          Printf.sprintf "(assert (=> %s %s))\n" req_combined ens_combined
-        in
-
-        (* Combine everything, send through to solver and up to parent *)
-        let outer_real = String.concat "" [wrapped_spec;current;inner_global] in
-        send_to_solver solver outer_real;
-
-        Some(outer_real,"true")
+        let global = Printf.sprintf "%s(assert (=> %s (and %s)))\n" global reachable spec in
+        pop_solver solver;
+        send_to_solver solver global;
+        Some(global,"true")
       end
 
   | _ -> failwith "unreachable"
@@ -265,7 +276,7 @@ let collect_splits queries depth =
   List.partition (fun q -> StringSet.mem q.qname !visited) queries
 
 let scoped_solve_effects solver effects =
-  let (exits,effects) = collect_splits effects 3 in
+  let (exits,effects) = collect_splits effects 1 in
   let topo_effects = Data_structures.query_topo_sort effects in
   debug_printf "  Processing %d effects, %d split\n" (List.length topo_effects) (List.length exits);
   let doms = Data_structures.dom_tree topo_effects in
@@ -281,8 +292,9 @@ let scoped_solve_effects solver effects =
   )) q.preds acc
   ) StringMap.empty exits in
 
-  let _ = dominator_solve count 0 solver entry doms solved results imm_exit in
-  (!solved, !results)
+  let result = dominator_solve count 0 solver entry doms results imm_exit  in
+  let learnt = match result with Some (s, r) -> s ^ "\n(assert (and " ^ r ^ "))\n" | None -> "" in
+  (!solved, !results, learnt)
 
 (** Solve conditions on effects by processing their conditions in topological order using an
     incremental SMT solver. *)
@@ -444,17 +456,21 @@ let generate_query_dependency_dot queries results_map =
   Buffer.contents buffer
 
 (** Main entry point for query optimization *)
-let run state timeout_ms enable_z3_simplify enable_scope =
+let run state timeout_ms enable_z3_simplify enable_scope enable_multi_solver enable_cascade_solver =
   let base = generate_incremental_base state in
-  let@ base = if enable_z3_simplify then Z3_solver.simplify state base else UNSOLVED [base] in
-  let solver = begin_solver state timeout_ms base in
+  let@ base = if enable_z3_simplify then Z3_solver.simplify state base timeout_ms else UNSOLVED [base] in
+  let solver =
+    if enable_cascade_solver    then begin_cascade_solver    state timeout_ms base
+    else if enable_multi_solver then begin_multi_solver      state timeout_ms base
+    else begin_solver state timeout_ms base
+  in
 
   (* Don't need effects that can't influence exit *)
   let filter_effects = Data_structures.reach_exit state.effects in
 
   (* Run solver over the effects *)
   if enable_scope then
-    let (effects, results_map) = scoped_solve_effects solver filter_effects in
+    let (effects, results_map, learnt) = scoped_solve_effects solver filter_effects in
 
     (* Generate query dependency visualization with results and timing *)
     if is_debug_enabled () then begin
@@ -477,7 +493,8 @@ let run state timeout_ms enable_z3_simplify enable_scope =
     match acc with
     | SOLVED -> SOLVED
     | UNSOLVED [] -> UNSOLVED []
-    | UNSOLVED final -> UNSOLVED ([{state with effects = effects @ final }])
+    | UNSOLVED final ->
+        UNSOLVED [({state with effects = effects @ final}, learnt)]
 
   else begin
     let (final,effects) = List.partition Data_structures.is_an_exit filter_effects in
@@ -496,5 +513,5 @@ let run state timeout_ms enable_z3_simplify enable_scope =
     match solve_goals solver final with
     | SOLVED -> SOLVED
     | UNSOLVED [] -> UNSOLVED []
-    | UNSOLVED final -> UNSOLVED ([{state with effects = effects @ final }])
+    | UNSOLVED final -> UNSOLVED ([({state with effects = effects @ final }, "")])
   end
