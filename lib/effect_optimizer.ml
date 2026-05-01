@@ -17,11 +17,11 @@ let pp_outcome = function
 
 let join_outcome a b =
   match a, b with
-  | Sat, _ 
+  | Sat, _
   | _, Sat -> Sat
-  | Unsat, _ 
+  | Unsat, _
   | _, Unsat -> Unsat
-  | Trivial, _ 
+  | Trivial, _
   | _, Trivial -> Trivial
   | _ -> Unreach
 
@@ -116,21 +116,36 @@ let rec dominator_solve (module S : Solver.Solver) count depth eff doms results 
     | _ -> try_forever terms
   in
 
-  let outcome = match S.check_sat_assuming [ens_sexp; not_req] with
-  | Solver.Unsat -> Trivial
-  | _ ->
-      begin
-        S.push ();
-        S.add ens_sexp;
-        S.add reach_sexp;
-        match S.check_sat_assuming []  with
-        | Solver.Unsat -> Unreach
-        | _ ->
-            match S.check_sat_assuming [not_req] with
-            | Solver.Sat -> Sat
-            | Solver.Unsat -> Unsat
-            | _ -> try_forever (List.map (fun p -> p.term) eff.req)
-      end
+  let necessary = StringSet.exists (fun pred_name ->
+    match StringMap.find_opt pred_name !results with
+    | Some (Trivial, _) -> true
+    | Some (Unsat, _) -> true
+    | _ -> false
+  ) eff.preds in
+
+  if not necessary && eff.qname <> "entry" then
+    let ms = (Unix.gettimeofday () -. start_time) *. 1000.0 in
+    debug_printf "%s in %.2fms\n" (pp_outcome Unreach) ms;
+    results := add_result !results name (Unreach, ms);
+    None
+  else begin
+
+  let outcome =
+    match S.check_sat_assuming [ens_sexp; not_req] with
+    | Solver.Unsat -> Trivial
+    | _ ->
+        begin
+          S.push ();
+          S.add ens_sexp;
+          S.add reach_sexp;
+          match S.check_sat_assuming []  with
+          | Solver.Unsat -> Unreach
+          | _ ->
+              match S.check_sat_assuming [not_req] with
+              | Solver.Sat -> Sat
+              | Solver.Unsat -> Unsat
+              | _ -> try_forever (List.map (fun p -> p.term) eff.req)
+        end
   in
 
   let ms = (Unix.gettimeofday () -. start_time) *. 1000.0 in
@@ -141,7 +156,8 @@ let rec dominator_solve (module S : Solver.Solver) count depth eff doms results 
   | Unreach ->
       S.pop ();
       None
-  | Sat -> raise Sat_outcome
+  | Sat ->
+      raise Sat_outcome
   | _ ->
       if outcome = Trivial then S.add ens_sexp;
       S.add req_sexp;
@@ -177,6 +193,7 @@ let rec dominator_solve (module S : Solver.Solver) count depth eff doms results 
         S.add (mk_and global);
         Some (global, [])
       end
+  end
 
 
 let collect_splits queries depth =
@@ -336,7 +353,7 @@ let run solver queries =
   let r = try
     ignore (dominator_solve solver count 0 (List.hd topo_effects) domtree results imm_exit);
     Solver.Unsat
-  with 
+  with
   | Sat_outcome ->  Solver.Sat
   | _ -> Solver.Unknown
   in
