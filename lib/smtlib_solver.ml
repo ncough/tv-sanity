@@ -42,6 +42,9 @@ let make (timeout_option, argv) : (module Solver.Solver) =
     let declare_const n s =
       send_str (Printf.sprintf "(declare-const %s %s)\n" n (render s))
 
+    let declare_fun n defs =
+      send_str (Printf.sprintf "(declare-fun %s %s)\n" n (String.concat " " (List.map render defs)))
+
     let add e =
       send_str (Printf.sprintf "(assert %s)\n" (render e))
 

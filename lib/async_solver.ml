@@ -170,6 +170,9 @@ let make (res_ms: int) configs : (module Solver.Solver) =
     let declare_const n s =
       broadcast (Printf.sprintf "(declare-const %s %s)\n" n (render s))
 
+    let declare_fun n defs =
+      broadcast (Printf.sprintf "(declare-fun %s %s)\n" n (String.concat " " (List.map render defs)))
+
     let add e =
       broadcast (Printf.sprintf "(assert %s)\n" (render e))
 

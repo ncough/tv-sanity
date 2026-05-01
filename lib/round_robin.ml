@@ -12,6 +12,7 @@ let make (res_ms: int) (solvers : (module Solver.Solver) list) : (module Solver.
     let set_logic l    = Array.iter (fun (module M : Solver.Solver) -> M.set_logic l) arr
     let set_option k v = Array.iter (fun (module M : Solver.Solver) -> M.set_option k v) arr
     let declare_const n s = Array.iter (fun (module M : Solver.Solver) -> M.declare_const n s) arr
+    let declare_fun n defs = Array.iter (fun (module M : Solver.Solver) -> M.declare_fun n defs) arr
     let add e    = Array.iter (fun (module M : Solver.Solver) -> M.add e) arr
     let push ()  = Array.iter (fun (module M : Solver.Solver) -> M.push ()) arr
     let pop ()   = Array.iter (fun (module M : Solver.Solver) -> M.pop ()) arr

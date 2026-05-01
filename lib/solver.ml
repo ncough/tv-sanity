@@ -18,6 +18,7 @@ module type Solver = sig
   val set_logic     : string -> unit
   val set_option    : string -> string -> unit
   val declare_const : string -> Sexplib0.Sexp.t -> unit
+  val declare_fun   : string -> Sexplib0.Sexp.t list -> unit
   val add           : Sexplib0.Sexp.t -> unit
   val push          : unit -> unit
   val pop           : unit -> unit

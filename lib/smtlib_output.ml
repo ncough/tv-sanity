@@ -175,6 +175,13 @@ let emit_final_assertions (module S : Solver.Solver) predicates =
     S.add neg
   ) predicates
 
+let emit_fun_defs (module S : Solver.Solver) funs =
+  List.iter (fun (ty, fun_name, defs) ->
+    match ty with
+    | `Decl -> S.declare_fun fun_name defs
+    | `Def  -> ()
+  ) funs
+
 (* ------------------------------------------------------------------ *)
 (* Legacy string-returning functions — kept for non-incremental callers *)
 (* ------------------------------------------------------------------ *)
