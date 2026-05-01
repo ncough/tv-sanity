@@ -386,9 +386,6 @@ let validate_phi block_predecessors def_at_exit_map var phi_list =
     let used_vars = free_vars expr in
     let pred_defs = StringMap.find pred_block def_at_exit_map in
     let undefined = StringSet.diff used_vars pred_defs in
-    (*if not (StringSet.is_empty undefined) then
-      Printf.printf "WARNING: Phi %s uses undefined vars %s from %s\n"
-        var (String.concat "," (StringSet.elements undefined)) pred_block;*)
     undefined
   ) phi_list in
   union_all undef

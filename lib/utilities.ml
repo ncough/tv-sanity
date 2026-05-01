@@ -5,10 +5,6 @@ open Sexplib0.Sexp
 module StringMap = Map.Make(String)
 module StringSet = Set.Make(String)
 
-let cvc5_path = "cvc5"
-let z3_path = "z3"
-let bitwuzla_path = "bitwuzla"
-
 let set_of_map a = a |> StringMap.to_seq |> Seq.map fst |> StringSet.of_seq
 
 let unreachable () = failwith "unreachable"
@@ -66,7 +62,6 @@ let union_all = function
   | [s] -> s
   | s :: rest -> List.fold_left StringSet.union s rest
 
-
 let pp_set set =
   String.concat "," (StringSet.elements set)
 
@@ -85,12 +80,9 @@ let is_debug_enabled () = !debug_enabled
 (** Debug printing function *)
 let debug_printf fmt =
   if is_debug_enabled () then begin
-    flush_all ();
-    Printf.printf fmt
+    Printf.ksprintf (fun s -> print_string s; flush stdout) fmt
   end else
-    Printf.ifprintf stdout fmt
-
-(** CVC5 solver path and configuration *)
+    Printf.ksprintf (fun _ -> ()) fmt
 
 (** Timing utility function *)
 let get_time fn =
@@ -153,85 +145,5 @@ let get_debug_directory () = !debug_directory
 (** Get debug file path *)
 let get_debug_file_path filename =
   match get_debug_directory () with
-  | Some dir -> Filename.concat dir filename
-  | None -> filename  (* fallback to current directory if no debug dir *)
-
-(** Solver result type *)
-type 'a result =
-  | SOLVED
-  | UNSOLVED of 'a list
-
-let pp_result = function
-  | SOLVED -> "sat"
-  | UNSOLVED [] -> "unsat"
-  | UNSOLVED _ -> "unknown"
-
-let result_map f = function
-  | SOLVED -> SOLVED
-  | UNSOLVED l -> UNSOLVED (List.map f l)
-
-let result_bind = fun res f ->
-  match res with
-  | SOLVED -> SOLVED
-  | UNSOLVED l -> 
-      List.fold_left (fun acc v ->
-        match acc with
-        | SOLVED -> SOLVED
-        | UNSOLVED l1 -> 
-            match f v with
-            | SOLVED -> SOLVED
-            | UNSOLVED l2 -> UNSOLVED (l1 @ l2)) (UNSOLVED []) l
-
-let (let@) = result_bind
-
-let result_size = function
-  | UNSOLVED l -> List.length l
-  | _ -> 0
-
-let wrap name fn =
-  debug_printf "Starting %s\n" name;
-  let start_time = Unix.gettimeofday () in
-  let res = fn () in
-  let end_time = Unix.gettimeofday () in
-  let elapsed_ms = (end_time -. start_time) *. 1000.0 in
-  debug_printf "Finished %s, %d goals remaining, in %.2fms\n" name (result_size res) elapsed_ms;
-  res
-
-(** Temporary file management with automatic cleanup *)
-let with_temp_file prefix suffix f =
-  let temp_filename =
-    if is_debug_enabled () then
-      get_debug_file_path (Printf.sprintf "%s_%05d%s" prefix (Random.int 100000) suffix)
-    else
-      Printf.sprintf "%s_%05d%s" prefix (Random.int 100000) suffix
-  in
-  let result =
-    try
-      f temp_filename
-    with exn ->
-      (* Clean up on exception if not in debug mode *)
-      (if not (is_debug_enabled ()) then
-        try Sys.remove temp_filename with _ -> ());
-      raise exn
-  in
-  (* Clean up normally if not in debug mode *)
-  (if not (is_debug_enabled ()) then
-    try Sys.remove temp_filename with _ -> ());
-  result
-
-(** Run external command and capture output *)
-let run_command cmd =
-  debug_printf "  Running command: %s\n" cmd;
-  let env = Unix.environment () in
-  let (ic,oc,ec) = Unix.open_process_full cmd env in
-  let buffer = Buffer.create 8192 in
-  (try
-    while true do
-      let line = input_line ic in
-      Buffer.add_string buffer line;
-      Buffer.add_char buffer '\n'
-    done
-  with End_of_file -> ());
-  let output = Buffer.contents buffer in
-  let exit_status = Unix.close_process_full (ic,oc,ec) in
-  (exit_status, output)
+  | Some dir -> Some (Filename.concat dir filename)
+  | None -> None

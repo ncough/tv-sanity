@@ -3,23 +3,19 @@
 open Data_structures
 open Utilities
 
-(** High-level SMT command interface consuming sexp expressions.
-    Implementations render sexps to whatever format the backend requires. *)
-type solver = {
-  name          : string;
-  set_logic     : string -> unit;
-  set_option    : string -> string -> unit;
-  declare_const : string -> Sexplib0.Sexp.t -> unit;
-  fun_def       : [`Def | `Decl] -> string -> Sexplib0.Sexp.t list -> unit;
-  assert_       : Sexplib0.Sexp.t -> unit;
-  assert_named  : string -> Sexplib0.Sexp.t -> unit;
-  push          : unit -> unit;
-  pop           : unit -> unit;
-  interrupt     : unit -> unit;
-  check_sat     : unit -> string;
-  history       : unit -> string;
-  close         : unit -> unit;
-}
+let mk_and sexps =
+  match sexps with
+  | [] -> Sexplib0.Sexp.Atom "true"
+  | [a] -> a
+  | _ -> Sexplib0.Sexp.List (Sexplib0.Sexp.Atom "and" :: sexps)
+
+let mk_imp ants cons =
+  match ants, cons with
+  | [], [a] -> a
+  | _, _ -> Sexplib0.Sexp.List [Sexplib0.Sexp.Atom "=>" ; mk_and ants ; mk_and cons]
+
+let mk_not sexp =
+  Sexplib0.Sexp.List [Sexplib0.Sexp.Atom "not"; sexp]
 
 (** Flag to enable/disable default values in ite chains *)
 let use_ite_default_values = ref false
@@ -58,27 +54,23 @@ let rec flatten_and_conditions = function
       List.concat_map flatten_and_conditions args
   | expr -> [expr]
 
+(* TODO: add named assertions (:named) *)
+
 (* ------------------------------------------------------------------ *)
-(* emit_* functions — take a solver and issue commands directly         *)
+(* emit_* functions — take a solver module and issue commands directly  *)
 (* ------------------------------------------------------------------ *)
 
-let emit_fun_defs solver funs =
-  List.iter (fun (ty, fun_name, defs) ->
-    solver.fun_def ty fun_name defs
-  ) funs
-
-let emit_variable_declarations solver program =
+let emit_variable_declarations (module S : Solver.Solver) program =
   StringMap.iter (fun var_name var ->
-    solver.declare_const var_name var.sort
+    S.declare_const var_name var.sort
   ) program.variables
 
-let emit_block_assertions solver program program_prefix =
+let emit_block_assertions (module S : Solver.Solver) program _program_prefix =
   (match program.entry with
   | Some entry_block ->
-      solver.assert_named (program_prefix ^ "_entry")
-        (Sexplib0.Sexp.List [Sexplib0.Sexp.Atom "=";
-                             Sexplib0.Sexp.Atom entry_block;
-                             Sexplib0.Sexp.Atom "true"])
+      S.add (Sexplib0.Sexp.List [Sexplib0.Sexp.Atom "=";
+                                 Sexplib0.Sexp.Atom entry_block;
+                                 Sexplib0.Sexp.Atom "true"])
   | None -> ());
 
   StringMap.iter (fun block_name block ->
@@ -99,22 +91,13 @@ let emit_block_assertions solver program program_prefix =
         | [single] -> single
         | multiple -> Sexplib0.Sexp.List (Sexplib0.Sexp.Atom "and" :: multiple)
       in
-      let assertion_name =
-        if String.starts_with ~prefix:program_prefix block_name then
-          let suffix = String.sub block_name (String.length program_prefix + 2)
-                         (String.length block_name - String.length program_prefix - 2) in
-          Printf.sprintf "%s%s" (String.sub program_prefix 0 3) suffix
-        else
-          block_name
-      in
-      solver.assert_named assertion_name
-        (Sexplib0.Sexp.List [Sexplib0.Sexp.Atom "=";
-                             Sexplib0.Sexp.Atom block_name;
-                             full_condition])
+      S.add (Sexplib0.Sexp.List [Sexplib0.Sexp.Atom "=";
+                                 Sexplib0.Sexp.Atom block_name;
+                                 full_condition])
     end
   ) program.blocks
 
-let emit_assignment_assertions solver program =
+let emit_assignment_assertions (module S : Solver.Solver) program =
   let get_default_value var =
     match StringMap.find_opt var program.variables with
     | None -> Sexplib0.Sexp.Atom "false"
@@ -129,16 +112,12 @@ let emit_assignment_assertions solver program =
                                 Sexplib0.Sexp.Atom size]
         | _ -> Sexplib0.Sexp.Atom "false"
   in
-  StringMap.iter (fun block_name block ->
+  StringMap.iter (fun _ block ->
     StringMap.iter (fun var phi_list ->
       match phi_list with
       | [] -> ()
-      | [(pred_block, expr)] ->
-          let phi_cond = Sexplib0.Sexp.List
-            [Sexplib0.Sexp.Atom "="; Sexplib0.Sexp.Atom var; expr] in
-          solver.assert_named
-            (Printf.sprintf "phi_%s_from_%s" var pred_block)
-            phi_cond
+      | [(_pred_block, expr)] ->
+          S.add (Sexplib0.Sexp.List [Sexplib0.Sexp.Atom "="; Sexplib0.Sexp.Atom var; expr])
       | _ ->
           if !use_ite_default_values then begin
             let default = get_default_value var in
@@ -151,9 +130,7 @@ let emit_assignment_assertions solver program =
                   Sexplib0.Sexp.List [Sexplib0.Sexp.Atom "ite";
                                       Sexplib0.Sexp.Atom pb; e; build rest]
             in
-            let phi_cond = Sexplib0.Sexp.List
-              [Sexplib0.Sexp.Atom "="; Sexplib0.Sexp.Atom var; build phi_list] in
-            solver.assert_named (Printf.sprintf "phi_%s" var) phi_cond
+            S.add (Sexplib0.Sexp.List [Sexplib0.Sexp.Atom "="; Sexplib0.Sexp.Atom var; build phi_list])
           end else begin
             let rec build = function
               | [] -> failwith "empty phi list"
@@ -162,52 +139,44 @@ let emit_assignment_assertions solver program =
                   Sexplib0.Sexp.List [Sexplib0.Sexp.Atom "ite";
                                       Sexplib0.Sexp.Atom pb; e; build rest]
             in
-            let phi_cond = Sexplib0.Sexp.List
-              [Sexplib0.Sexp.Atom "="; Sexplib0.Sexp.Atom var; build phi_list] in
-            solver.assert_named (Printf.sprintf "phi_%s" var) phi_cond
+            S.add (Sexplib0.Sexp.List [Sexplib0.Sexp.Atom "="; Sexplib0.Sexp.Atom var; build phi_list])
           end
     ) block.phis;
-    List.iteri (fun i op ->
+    List.iter (fun op ->
       match op with
       | Assignment { var; expr } ->
-          let cond = Sexplib0.Sexp.List
-            [Sexplib0.Sexp.Atom "="; Sexplib0.Sexp.Atom var; expr] in
-          solver.assert_named
-            (Printf.sprintf "%s_op_%d" block_name i)
-            cond
+          S.add (Sexplib0.Sexp.List [Sexplib0.Sexp.Atom "="; Sexplib0.Sexp.Atom var; expr])
       | _ -> ()
     ) block.ops
   ) program.blocks
 
-let emit_arbitrary_assertions solver state =
+let emit_arbitrary_assertions (module S : Solver.Solver) state =
   List.iter (fun predicate ->
-    solver.assert_ predicate.term
+    S.add predicate.term
   ) state.arbitrary
 
-let emit_effect_query solver query =
+let emit_effect_query (module S : Solver.Solver) query =
   let req = conjunction_sexp query.req in
   let ens = conjunction_sexp query.ens in
   let impl = Sexplib0.Sexp.List [Sexplib0.Sexp.Atom "=>"; req; ens] in
-  solver.assert_named query.qname impl
+  S.add impl
 
-let emit_effect_assertions solver queries =
-  List.iter (emit_effect_query solver) queries
+let emit_effect_assertions (module S : Solver.Solver) queries =
+  List.iter (fun q -> emit_effect_query (module S) q) queries
 
-let emit_initial_assertions solver predicates =
-  List.iteri (fun i predicate ->
-    solver.assert_named (Printf.sprintf "inv%d" (i + 1)) predicate.term
+let emit_initial_assertions (module S : Solver.Solver) predicates =
+  List.iter (fun predicate ->
+    S.add predicate.term
   ) predicates
 
-let emit_final_assertions solver predicates =
-  List.iteri (fun i predicate ->
+let emit_final_assertions (module S : Solver.Solver) predicates =
+  List.iter (fun predicate ->
     let neg = Sexplib0.Sexp.List [Sexplib0.Sexp.Atom "not"; predicate.term] in
-    let name = if i = 0 then "InvPrimed" else Printf.sprintf "InvPrimed%d" i in
-    solver.assert_named name neg
+    S.add neg
   ) predicates
 
 (* ------------------------------------------------------------------ *)
 (* Legacy string-returning functions — kept for non-incremental callers *)
-(* (solver_pipeline.ml, cvc5_solver.ml, z3_solver.ml)                 *)
 (* ------------------------------------------------------------------ *)
 
 let generate_conjunction predicates =
@@ -216,15 +185,6 @@ let generate_conjunction predicates =
   | [] -> "true"
   | [single] -> sexp_to_smtlib single
   | multiple -> Printf.sprintf "(and %s)" (String.concat " " (List.map sexp_to_smtlib multiple))
-
-let generate_fun_defs funs =
-  let buffer = Buffer.create 1024 in
-  List.iter (fun (ty, fun_name, defs) ->
-    let decl = match ty with `Def -> "define-fun" | `Decl -> "declare-fun" in
-    let sort_str = String.concat " " (List.map sexp_to_smtlib defs) in
-    Buffer.add_string buffer (Printf.sprintf "(%s %s %s )\n" decl fun_name sort_str)
-  ) funs;
-  Buffer.contents buffer
 
 let generate_variable_declarations program =
   let buffer = Buffer.create 1024 in
@@ -406,7 +366,6 @@ let generate_smtlib_tactic_footer tactic = Printf.sprintf "%s\n" tactic
 let state_to_smtlib_string state =
   let buffer = Buffer.create 4096 in
   Buffer.add_string buffer generate_smtlib_header;
-  Buffer.add_string buffer (generate_fun_defs state.funs);
   Buffer.add_string buffer (generate_variable_declarations state.source);
   Buffer.add_string buffer (generate_variable_declarations state.target);
   Buffer.add_string buffer (generate_block_assertions state.source "source");
@@ -421,7 +380,6 @@ let state_to_smtlib_string state =
 let state_to_smtlib_tactic_string state tactic =
   let buffer = Buffer.create 4096 in
   Buffer.add_string buffer generate_smtlib_header;
-  Buffer.add_string buffer (generate_fun_defs state.funs);
   Buffer.add_string buffer (generate_variable_declarations state.source);
   Buffer.add_string buffer (generate_variable_declarations state.target);
   Buffer.add_string buffer (generate_block_assertions state.source "source");
@@ -450,7 +408,6 @@ let write_smtlib_tactic_file filename state tactic =
 let create_smtlib_file_with_content state content filename =
   let oc = open_out filename in
   Printf.fprintf oc "%s" generate_smtlib_header;
-  Printf.fprintf oc "%s" (generate_fun_defs state.funs);
   Printf.fprintf oc "%s" (generate_variable_declarations state.source);
   Printf.fprintf oc "%s" (generate_variable_declarations state.target);
   Printf.fprintf oc "%s" content;

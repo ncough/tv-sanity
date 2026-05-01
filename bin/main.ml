@@ -3,10 +3,10 @@
 open Tv_sanity.Program_parser
 open Tv_sanity.Solver_pipeline
 open Tv_sanity.Utilities
-open Tv_sanity.Program_validator
+open Tv_sanity.Solver
 
 (** Parse and process a single SMT-LIB2 file with main pipeline *)
-let process_file filename timeout_ms disable_z3_simplify validate_preds enable_scope enable_multi_solver enable_cascade_solver =
+let process_file filename ~timeout_ms ~use_async ~resolution_ms ~enable_z3 ~enable_cvc5 ~enable_bitwuzla =
   try
     let state = parse_file filename in
     let base_filename = Filename.remove_extension filename in
@@ -14,59 +14,53 @@ let process_file filename timeout_ms disable_z3_simplify validate_preds enable_s
     (* Create debug directory if in debug mode *)
     (if is_debug_enabled () then ignore (create_debug_directory (Filename.basename base_filename)));
 
-    (* Validate predecessor exclusivity *)
-    if validate_preds then begin
-      validate_program_exclusivity state.source timeout_ms;
-      validate_program_exclusivity state.target timeout_ms
-    end;
-
     (* Apply copy/constant propagation *)
     let state = Tv_sanity.Copy_prop.transform_state state in
 
-    let r = solve state timeout_ms ~enable_z3_simplify:(not disable_z3_simplify) enable_scope enable_multi_solver enable_cascade_solver in
-    Printf.printf "%s\n" (pp_result r); true
+    let (r,ms) = solve state ~timeout_ms ~use_async ~resolution_ms ~enable_z3 ~enable_cvc5 ~enable_bitwuzla in
+    if is_debug_enabled () then
+      Printf.printf "%s in %.2fms\n" (pp_r r) ms
+    else
+      Printf.printf "%s\n" (pp_r r);
+    0
   with
   | exn ->
     let error_msg = Printexc.to_string exn in
     debug_printf "FAIL: %s - %s\n" (Filename.basename filename) error_msg;
     Printf.printf "unknown\n" ;
-    false
+    1
 
 (** Main entry point *)
 let () =
   (* Command line argument variables *)
-  let timeout_ms = ref 30000 in  (* Default 30 second timeout *)
+  let timeout_ms = ref 10000 in
+  let resolution_ms = ref 1000 in
+  let use_async = ref true in
   let input_files = ref [] in
-  let validate_preds = ref false in
-  let disable_z3_simplify = ref false in
-  let enable_scope = ref false in
-  let enable_multi_solver = ref false in
-  let enable_cascade_solver = ref false in
+  let enable_z3 = ref true in
+  let enable_cvc5 = ref true in
+  let enable_bitwuzla = ref true in
 
   (* Argument specification *)
   let spec = [
     ("--debug", Arg.Unit (fun () -> set_debug_mode true),
      " Enable debug mode with debug directory creation");
     ("--timeout", Arg.Int (fun t -> timeout_ms := t),
-     "<timeout_ms> Timeout in milliseconds for solver operations (default: 30000)");
-    ("--validate_preds", Arg.Set validate_preds,
-     " Enable mutually exclusive predecessor check");
-    ("--no-z3-simplify", Arg.Set disable_z3_simplify,
-     " Disable Z3 simplification before effect optimization");
-    ("--scope", Arg.Set enable_scope,
-     " Enable scoped solver");
-    ("--multi-solver", Arg.Set enable_multi_solver,
-     " Use CVC5 + Z3 + Bitwuzla incremental solvers in parallel");
-    ("--cascade-solver", Arg.Set enable_cascade_solver,
-     " Try Bitwuzla, then Z3, then CVC5; stop on first sat/unsat");
+     "<timeout_ms> Timeout in milliseconds for solver operations (default: 10000)");
+    ("--resolution", Arg.Int (fun r -> resolution_ms := r),
+     "<ms> Per-solver check-sat budget in milliseconds (default: 1000)");
+    ("--sync", Arg.Clear use_async,
+     " Use synchronous round-robin solving instead of async");
+    ("--disable-z3", Arg.Clear enable_z3,
+     " Disable use of z3");
+    ("--disable-cvc5", Arg.Clear enable_cvc5,
+     " Disable use of cvc5");
+    ("--disable-bw", Arg.Clear enable_bitwuzla,
+     " Disable use of bitwuzla");
   ] in
 
   let usage_msg = Printf.sprintf "Usage: %s [options] <smt2_file>\nOptions:" Sys.argv.(0) in
-
-  (* Parse anonymous arguments (input files) *)
   let anon_fun filename = input_files := filename :: !input_files in
-
-  (* Parse command line arguments *)
   Arg.parse spec anon_fun usage_msg;
 
   (* Validate input *)
@@ -76,10 +70,15 @@ let () =
       Arg.usage spec usage_msg;
       exit 1
   | [filename] ->
-      if process_file filename !timeout_ms !disable_z3_simplify !validate_preds !enable_scope !enable_multi_solver !enable_cascade_solver then
-        exit 0
-      else
-        exit 1
+      let timeout_ms = !timeout_ms in
+      let resolution_ms = !resolution_ms in
+      let use_async = !use_async in
+      let enable_z3 = !enable_z3 in
+      let enable_cvc5 = !enable_cvc5 in
+      let enable_bitwuzla = !enable_bitwuzla in
+      let code = process_file filename
+        ~timeout_ms ~use_async ~resolution_ms ~enable_z3 ~enable_cvc5 ~enable_bitwuzla in
+      exit code
   | _ ->
       Printf.printf "Error: Too many input files specified\n";
       Arg.usage spec usage_msg;
