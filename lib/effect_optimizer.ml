@@ -311,6 +311,7 @@ let run solver queries =
 
   (* Split the exit queries from all others *)
   let (exits, nonexit) = collect_splits filtered 1 in
+  debug_printf "Solving %d queries, %d exits\n" (List.length nonexit) (List.length exits);
 
   (* TODO: Some benefit here, but needs to be explored. *)
   (*let nonexit = collapse_sequential nonexit in*)

@@ -10,7 +10,7 @@ let bw_config   = ("time-limit-per", ["bitwuzla"])
 
 (** Run the incremental solver from an initial unconfigured state *)
 let run (module S : Solver.Solver) state timeout_ms =
-  S.set_logic "QF_BV";
+  S.set_logic "QF_UFBV";
   S.set_timeout timeout_ms;
   emit_variable_declarations (module S) state.source;
   emit_variable_declarations (module S) state.target;

@@ -40,6 +40,7 @@ let () =
   let enable_z3 = ref true in
   let enable_cvc5 = ref true in
   let enable_bitwuzla = ref true in
+  let version = ref false in
 
   (* Argument specification *)
   let spec = [
@@ -57,11 +58,23 @@ let () =
      " Disable use of cvc5");
     ("--disable-bw", Arg.Clear enable_bitwuzla,
      " Disable use of bitwuzla");
+    ("--version", Arg.Set version,
+     " Dump version information");
   ] in
 
   let usage_msg = Printf.sprintf "Usage: %s [options] <smt2_file>\nOptions:" Sys.argv.(0) in
   let anon_fun filename = input_files := filename :: !input_files in
   Arg.parse spec anon_fun usage_msg;
+
+  if !version then begin
+    List.iter (fun cmd ->
+      let ic = Unix.open_process_in cmd in
+      (try while true do print_string (input_line ic); print_char '\n' done
+       with End_of_file -> ());
+      ignore (Unix.close_process_in ic)
+    ) ["z3 --version"; "cvc5 --version"; "bitwuzla --version"];
+    exit 0
+  end;
 
   (* Validate input *)
   match List.rev !input_files with
