@@ -5,8 +5,43 @@ open Tv_sanity.Solver_pipeline
 open Tv_sanity.Utilities
 open Tv_sanity.Solver
 
+
+let result_of_cvc exit_status output =
+    match exit_status, String.trim output with
+    | Unix.WEXITED 0, "sat" -> Sat
+    | Unix.WEXITED 0, "unsat" -> Unsat
+    | Unix.WEXITED 0, _ -> Unknown 
+    | _, "cvc5 interrupted by timeout." ->
+        (* CVC5 timeout - treat as unsolved *)
+        Unknown
+    | _ ->
+        Unknown
+
+
+let run_command cmd =
+  debug_printf "  Running command: %s\n" cmd;
+  let env = Unix.environment () in
+  let (ic,oc,ec) = Unix.open_process_full cmd env in
+  let buffer = Buffer.create 8192 in
+  (try
+    while true do
+      let line = input_line ic in
+      Buffer.add_string buffer line;
+      Buffer.add_char buffer '\n'
+    done
+  with End_of_file -> ());
+  let output = Buffer.contents buffer in
+  let exit_status = Unix.close_process_full (ic,oc,ec) in
+  (exit_status, output)
+
+let cvc5_batch timeout_ms filename = 
+  let cvc5_cmd = Printf.sprintf "%s --tlimit %d --repeat-simp '%s'" "cvc5" timeout_ms filename in
+  let (exit_status, output) = run_command cvc5_cmd in
+  result_of_cvc exit_status output
+
+
 (** Parse and process a single SMT-LIB2 file with main pipeline *)
-let process_file filename ~timeout_ms ~use_async ~resolution_ms ~enable_z3 ~enable_cvc5 ~enable_bitwuzla =
+let process_file filename ~timeout_ms ~use_async ~resolution_ms ~enable_z3 ~enable_cvc5 ~enable_bitwuzla ~fallback_batch =
   try
     let state = parse_file filename in
     let base_filename = Filename.remove_extension filename in
@@ -20,9 +55,16 @@ let process_file filename ~timeout_ms ~use_async ~resolution_ms ~enable_z3 ~enab
     let (r,ms) = solve state ~timeout_ms ~use_async ~resolution_ms ~enable_z3 ~enable_cvc5 ~enable_bitwuzla in
     if is_debug_enabled () then
       Printf.printf "%s in %.2fms\n" (pp_r r) ms
-    else
-      Printf.printf "%s\n" (pp_r r);
-    0
+    ;
+     let r = (match r with
+         | Sat when fallback_batch -> begin
+         let (final) = cvc5_batch timeout_ms filename in
+         final
+         end
+         | o -> o
+     ) in
+      print_endline @@ pp_r r ;
+      0
   with
   | exn ->
     let error_msg = Printexc.to_string exn in
@@ -41,6 +83,7 @@ let () =
   let enable_cvc5 = ref true in
   let enable_bitwuzla = ref true in
   let version = ref false in
+  let fallback_batch = ref false in
 
   (* Argument specification *)
   let spec = [
@@ -58,6 +101,8 @@ let () =
      " Disable use of cvc5");
     ("--disable-bw", Arg.Clear enable_bitwuzla,
      " Disable use of bitwuzla");
+    ("--fallback-batch", Arg.Set fallback_batch,
+     " On sat try again with cvc5 batch solver");
     ("--version", Arg.Set version,
      " Dump version information");
   ] in
@@ -89,8 +134,9 @@ let () =
       let enable_z3 = !enable_z3 in
       let enable_cvc5 = !enable_cvc5 in
       let enable_bitwuzla = !enable_bitwuzla in
+      let fallback_batch = !fallback_batch in
       let code = process_file filename
-        ~timeout_ms ~use_async ~resolution_ms ~enable_z3 ~enable_cvc5 ~enable_bitwuzla in
+        ~timeout_ms ~use_async ~resolution_ms ~enable_z3 ~enable_cvc5 ~enable_bitwuzla ~fallback_batch in
       exit code
   | _ ->
       Printf.printf "Error: Too many input files specified\n";
