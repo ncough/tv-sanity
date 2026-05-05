@@ -6,7 +6,7 @@ open Smtlib_output
 
 let z3_config   = ("timeout",    "z3", ["z3"; "-in"])
 let cvc5_config = ("tlimit-per", "cvc5", ["cvc5"; "--incremental"; "--repeat-simp"])
-let bw_config   = ("time-limit-per", "bitwuzla", ["bitwuzla"; "--rewrite-no-mul"]) 
+let bw_config   = ("time-limit-per", "bitwuzla", ["bitwuzla"; "--rewrite-no-mul"; "--abstraction-bv-size"; "16"])
 
 (** Run the incremental solver from an initial unconfigured state *)
 let run (module S : Solver.Solver) state timeout_ms ~topo =
