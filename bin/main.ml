@@ -82,7 +82,7 @@ let () =
   let enable_z3 = ref true in
   let enable_cvc5 = ref true in
   let enable_bitwuzla = ref true in
-  let topo = ref false in
+  let topo = ref true in
   let version = ref false in
   let fallback_batch = ref false in
 
@@ -104,8 +104,8 @@ let () =
      " Disable use of bitwuzla");
     ("--fallback-batch", Arg.Set fallback_batch,
      " On sat try again with cvc5 batch solver");
-    ("--topo", Arg.Set topo,
-     " Use topological walk instead of dominator tree for effect solving");
+    ("--dom", Arg.Clear topo,
+     " Use dominator walk");
     ("--version", Arg.Set version,
      " Dump version information");
   ] in
