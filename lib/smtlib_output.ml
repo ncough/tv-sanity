@@ -20,6 +20,10 @@ let mk_not sexp =
 (** Flag to enable/disable default values in ite chains *)
 let use_ite_default_values = ref false
 
+(** Flag to emit phi nodes as implication assertions (cond => result = input)
+    instead of a single ite chain *)
+let use_phi_implications = ref false
+
 (** Convert S-expression to SMT-LIB string with proper formatting *)
 let sexp_to_smtlib sexp =
   let rec format_sexp = function
@@ -114,6 +118,12 @@ let emit_assignment_assertions (module S : Solver.Solver) program =
   in
   StringMap.iter (fun _ block ->
     StringMap.iter (fun var phi_list ->
+      if !use_phi_implications then
+        List.iter (fun (pb, e) ->
+          let eq = Sexplib0.Sexp.List [Sexplib0.Sexp.Atom "="; Sexplib0.Sexp.Atom var; e] in
+          S.add (Sexplib0.Sexp.List [Sexplib0.Sexp.Atom "=>"; Sexplib0.Sexp.Atom pb; eq])
+        ) phi_list
+      else
       match phi_list with
       | [] -> ()
       | [(_pred_block, expr)] ->
@@ -139,7 +149,10 @@ let emit_assignment_assertions (module S : Solver.Solver) program =
                   Sexplib0.Sexp.List [Sexplib0.Sexp.Atom "ite";
                                       Sexplib0.Sexp.Atom pb; e; build rest]
             in
-            S.add (Sexplib0.Sexp.List [Sexplib0.Sexp.Atom "="; Sexplib0.Sexp.Atom var; build phi_list])
+            let sorted = List.sort (fun (_, e1) (_, e2) ->
+              String.compare (sexp_to_smtlib e1) (sexp_to_smtlib e2)
+            ) phi_list in
+            S.add (Sexplib0.Sexp.List [Sexplib0.Sexp.Atom "="; Sexplib0.Sexp.Atom var; build sorted])
           end
     ) block.phis;
     List.iter (fun op ->

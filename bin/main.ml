@@ -10,7 +10,7 @@ let result_of_cvc exit_status output =
     match exit_status, String.trim output with
     | Unix.WEXITED 0, "sat" -> Sat
     | Unix.WEXITED 0, "unsat" -> Unsat
-    | Unix.WEXITED 0, _ -> Unknown 
+    | Unix.WEXITED 0, _ -> Unknown
     | _, "cvc5 interrupted by timeout." ->
         (* CVC5 timeout - treat as unsolved *)
         Unknown
@@ -34,14 +34,14 @@ let run_command cmd =
   let exit_status = Unix.close_process_full (ic,oc,ec) in
   (exit_status, output)
 
-let cvc5_batch timeout_ms filename = 
+let cvc5_batch timeout_ms filename =
   let cvc5_cmd = Printf.sprintf "%s --tlimit %d --repeat-simp '%s'" "cvc5" timeout_ms filename in
   let (exit_status, output) = run_command cvc5_cmd in
   result_of_cvc exit_status output
 
 
 (** Parse and process a single SMT-LIB2 file with main pipeline *)
-let process_file filename ~timeout_ms ~use_async ~resolution_ms ~enable_z3 ~enable_cvc5 ~enable_bitwuzla ~fallback_batch =
+let process_file filename ~timeout_ms ~use_async ~resolution_ms ~enable_z3 ~enable_cvc5 ~enable_bitwuzla ~fallback_batch  ~topo =
   try
     let state = parse_file filename in
     let base_filename = Filename.remove_extension filename in
@@ -52,7 +52,7 @@ let process_file filename ~timeout_ms ~use_async ~resolution_ms ~enable_z3 ~enab
     (* Apply copy/constant propagation *)
     let state = Tv_sanity.Copy_prop.transform_state state in
 
-    let (r,ms) = solve state ~timeout_ms ~use_async ~resolution_ms ~enable_z3 ~enable_cvc5 ~enable_bitwuzla in
+    let (r,ms) = solve state ~timeout_ms ~use_async ~resolution_ms ~enable_z3 ~enable_cvc5 ~enable_bitwuzla ~topo in
     if is_debug_enabled () then
       Printf.printf "%s in %.2fms\n" (pp_r r) ms
     ;
@@ -82,6 +82,7 @@ let () =
   let enable_z3 = ref true in
   let enable_cvc5 = ref true in
   let enable_bitwuzla = ref true in
+  let topo = ref false in
   let version = ref false in
   let fallback_batch = ref false in
 
@@ -103,6 +104,8 @@ let () =
      " Disable use of bitwuzla");
     ("--fallback-batch", Arg.Set fallback_batch,
      " On sat try again with cvc5 batch solver");
+    ("--topo", Arg.Set topo,
+     " Use topological walk instead of dominator tree for effect solving");
     ("--version", Arg.Set version,
      " Dump version information");
   ] in
@@ -135,8 +138,9 @@ let () =
       let enable_cvc5 = !enable_cvc5 in
       let enable_bitwuzla = !enable_bitwuzla in
       let fallback_batch = !fallback_batch in
+      let topo = !topo in
       let code = process_file filename
-        ~timeout_ms ~use_async ~resolution_ms ~enable_z3 ~enable_cvc5 ~enable_bitwuzla ~fallback_batch in
+        ~timeout_ms ~use_async ~resolution_ms ~enable_z3 ~enable_cvc5 ~enable_bitwuzla ~fallback_batch  ~topo in
       exit code
   | _ ->
       Printf.printf "Error: Too many input files specified\n";

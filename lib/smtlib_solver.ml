@@ -12,8 +12,7 @@ let launch name argv =
   let (stdout, stdin, stderr) = Unix.open_process_full cmd (Unix.environment ()) in
   { stdin; stdout; stderr; debug_log }
 
-let make (timeout_option, argv) : (module Solver.Solver) =
-  let name = List.nth argv 0 in
+let make (timeout_option, name, argv) : (module Solver.Solver) =
   let p = launch name argv in
   let send_str s =
     (match p.debug_log with Some l -> output_string l s; flush l | None -> ());

@@ -5,6 +5,7 @@ open Utilities
 open Smtlib_output
 
 exception Sat_outcome
+exception Unknown_outcome
 
 type outcome =
   Sat | Unsat | Unreach | Trivial
@@ -196,6 +197,62 @@ let rec dominator_solve (module S : Solver.Solver) count depth eff doms results 
   end
 
 
+let topo_loop_solve (module S : Solver.Solver) count queries results =
+  List.iter (fun eff ->
+    debug_printf "  [%d] %s - " !count eff.qname;
+    count := !count + 1;
+    let req_sexp   = conjunction_sexp eff.req in
+    let ens_sexp   = conjunction_sexp eff.ens in
+    let reach_sexp = reachability_sexp eff in
+    let name = eff.qname in
+    let start_time = Unix.gettimeofday () in
+    let not_req = mk_not req_sexp in
+
+    let try_forever terms =
+      match collect_assumed (module S) terms with
+      | Solver.Sat -> Sat
+      | Solver.Unsat -> Unsat
+      | _ -> raise Unknown_outcome
+    in
+
+    let necessary = StringSet.exists (fun pred_name ->
+      match StringMap.find_opt pred_name !results with
+      | Some (Trivial, _) -> true
+      | Some (Unsat, _) -> true
+      | _ -> false
+    ) eff.preds in
+
+    let outcome =
+      if not necessary && eff.qname <> "entry" then
+        Unreach
+      else
+        match S.check_sat_assuming [ ens_sexp; not_req] with
+        | Solver.Unsat -> Trivial
+        | _ ->
+            match S.check_sat_assuming [ ens_sexp; reach_sexp] with
+            | Solver.Unsat -> Unreach
+            | _ ->
+                match S.check_sat_assuming [ ens_sexp; reach_sexp; not_req] with
+                | Solver.Sat -> Sat
+                | Solver.Unsat -> Unsat
+                | _ -> try_forever (List.map (fun p -> p.term) eff.req)
+    in
+
+    let ms = (Unix.gettimeofday () -. start_time) *. 1000.0 in
+    debug_printf "%s in %.2fms\n" (pp_outcome outcome) ms;
+    results := add_result !results name (outcome, ms);
+
+    match outcome with
+    | Sat -> raise Sat_outcome
+    | Unreach -> S.add (mk_not reach_sexp)
+    | Trivial ->
+        S.add ens_sexp;
+        S.add req_sexp
+    | Unsat ->
+        S.add ens_sexp;
+        S.add (mk_imp [reach_sexp] [req_sexp])
+  ) queries
+
 let collect_splits queries depth =
   let query_map = List.fold_left (fun acc query ->
     StringMap.add query.qname query acc
@@ -322,40 +379,51 @@ let generate_query_dependency_dot queries (results_map: results_map) =
   Buffer.add_string buffer "}\n";
   Buffer.contents buffer
 
-let run solver queries =
+let run ?(topo=false) solver queries =
   (* Remove queries that can't help to show exits *)
   let filtered = can_reach_exit queries in
 
-  (* Split the exit queries from all others *)
-  let (exits, nonexit) = collect_splits filtered 1 in
-  debug_printf "Solving %d queries, %d exits\n" (List.length nonexit) (List.length exits);
-
-  (* TODO: Some benefit here, but needs to be explored. *)
-  (*let nonexit = collapse_sequential nonexit in*)
-
-  (* Topological sort on the remaining queries *)
-  let topo_effects = Data_structures.query_topo_sort nonexit in
-
-  (* Compute the dominator tree *)
-  let domtree = Data_structures.dom_tree topo_effects in
-
-  (* Mess *)
   let count   = ref 0 in
   let results = ref StringMap.empty in
-  let imm_exit = List.fold_left (fun acc (q : query) ->
-    StringSet.fold (fun pred -> StringMap.update pred (function
-      | Some e -> Some (q :: e)
-      | None   -> Some [q]
-    )) q.preds acc
-  ) StringMap.empty exits in
 
-  (* Run the solver *)
-  let r = try
-    ignore (dominator_solve solver count 0 (List.hd topo_effects) domtree results imm_exit);
-    Solver.Unsat
-  with
-  | Sat_outcome ->  Solver.Sat
-  | _ -> Solver.Unknown
+  let r =
+    if topo then begin
+      let topo_effects = Data_structures.query_topo_sort filtered in
+      debug_printf "Solving %d queries (topo mode)\n" (List.length topo_effects);
+      try
+        topo_loop_solve solver count topo_effects results;
+        Solver.Unsat
+      with
+      | Sat_outcome -> Solver.Sat
+      | _ -> Solver.Unknown
+    end else begin
+      (* Split the exit queries from all others *)
+      let (exits, nonexit) = collect_splits filtered 1 in
+      debug_printf "Solving %d queries, %d exits\n" (List.length nonexit) (List.length exits);
+
+      (* TODO: Some benefit here, but needs to be explored. *)
+      (*let nonexit = collapse_sequential nonexit in*)
+
+      (* Topological sort on the remaining queries *)
+      let topo_effects = Data_structures.query_topo_sort nonexit in
+
+      (* Compute the dominator tree *)
+      let domtree = Data_structures.dom_tree topo_effects in
+
+      let imm_exit = List.fold_left (fun acc (q : query) ->
+        StringSet.fold (fun pred -> StringMap.update pred (function
+          | Some e -> Some (q :: e)
+          | None   -> Some [q]
+        )) q.preds acc
+      ) StringMap.empty exits in
+
+      try
+        ignore (dominator_solve solver count 0 (List.hd topo_effects) domtree results imm_exit);
+        Solver.Unsat
+      with
+      | Sat_outcome ->  Solver.Sat
+      | _ -> Solver.Unknown
+    end
   in
 
   (* Generate the query dot graph, if necessary *)

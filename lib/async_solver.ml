@@ -127,8 +127,7 @@ let worker_fn sh w () =
 
 (* Each config is (timeout_option, argv) for one solver process. *)
 let make (res_ms: int) configs : (module Solver.Solver) =
-  let workers = List.map (fun (timeout_option, argv) ->
-    let solver_name = List.nth argv 0 in
+  let workers = List.map (fun (timeout_option, solver_name, argv) ->
     let proc = launch solver_name argv in
     { proc; pending = Atomic.make []; timeout_option; solver_name }
   ) configs in
