@@ -82,6 +82,7 @@ let () =
   let enable_z3 = ref true in
   let enable_cvc5 = ref true in
   let enable_bitwuzla = ref true in
+  let patched_bitwuzla = ref true in
   let topo = ref true in
   let spec = ref true in
   let version = ref false in
@@ -103,6 +104,8 @@ let () =
      " Disable use of cvc5");
     ("--disable-bw", Arg.Clear enable_bitwuzla,
      " Disable use of bitwuzla");
+    ("--disable-bw-patched", Arg.Clear patched_bitwuzla,
+     " Disable use of patched bitwuzla");
     ("--fallback-batch", Arg.Set fallback_batch,
      " On sat try again with cvc5 batch solver");
     ("--dom", Arg.Clear topo,
@@ -139,7 +142,11 @@ let () =
       let use_async = !use_async in
       let enable_z3 = !enable_z3 in
       let enable_cvc5 = !enable_cvc5 in
-      let enable_bitwuzla = !enable_bitwuzla in
+      let enable_bitwuzla = match !enable_bitwuzla , !patched_bitwuzla with 
+        | false, _ -> `No
+        | true, false -> `Default
+        | true, true -> `Patched
+      in
       let fallback_batch = !fallback_batch in
       let topo = !topo in
       let spec = !spec in
