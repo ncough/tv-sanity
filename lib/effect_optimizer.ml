@@ -50,7 +50,7 @@ let can_reach_exit queries =
   List.iter (fun q -> if is_an_exit q then walk q.qname) queries;
   List.filter (fun q -> StringSet.mem q.qname !visited) queries
 
-let collect_assumed (module S : Solver.Solver) req_sexps =
+let collect_assumed (module S : Solver.Solver) facts req_sexps =
   let solved_all = ref Solver.Unsat in
   let rec walk facts sexp =
     match sexp with
@@ -66,7 +66,7 @@ let collect_assumed (module S : Solver.Solver) req_sexps =
         solved_all := Solver.and_r !solved_all result;
         debug_printf "%s in %.2fms\n" (Solver.pp_r result) ms
   in
-  List.iter (walk []) req_sexps;
+  List.iter (walk facts) req_sexps;
   !solved_all
 
 let collapse_sequential queries =
@@ -111,7 +111,7 @@ let rec dominator_solve (module S : Solver.Solver) count depth eff doms results 
   let not_req = mk_not req_sexp in
 
   let rec try_forever terms =
-    match collect_assumed (module S) terms with
+    match collect_assumed (module S) [reach_sexp] terms with
     | Solver.Sat -> Sat
     | Solver.Unsat -> Unsat
     | _ -> try_forever terms
@@ -197,7 +197,7 @@ let rec dominator_solve (module S : Solver.Solver) count depth eff doms results 
   end
 
 
-let topo_loop_solve (module S : Solver.Solver) count queries results =
+let topo_loop_solve (module S : Solver.Solver) ~spec count queries results =
   List.iter (fun eff ->
     debug_printf "  [%d] %s - " !count eff.qname;
     count := !count + 1;
@@ -209,7 +209,7 @@ let topo_loop_solve (module S : Solver.Solver) count queries results =
     let not_req = mk_not req_sexp in
 
     let try_forever terms =
-      match collect_assumed (module S) terms with
+      match collect_assumed (module S) [reach_sexp] terms with
       | Solver.Sat -> Sat
       | Solver.Unsat -> Unsat
       | _ -> raise Unknown_outcome
@@ -225,17 +225,25 @@ let topo_loop_solve (module S : Solver.Solver) count queries results =
     let outcome =
       if not necessary && eff.qname <> "entry" then
         Unreach
-      else
-        match S.check_sat_assuming [ ens_sexp; not_req] with
+      else if spec then
+        match S.check_sat_assuming [ not_req] with
         | Solver.Unsat -> Trivial
         | _ ->
-            match S.check_sat_assuming [ ens_sexp; reach_sexp] with
+            match S.check_sat_assuming [ reach_sexp] with
             | Solver.Unsat -> Unreach
             | _ ->
-                match S.check_sat_assuming [ ens_sexp; reach_sexp; not_req] with
+                match S.check_sat_assuming [ reach_sexp; not_req] with
                 | Solver.Sat -> Sat
                 | Solver.Unsat -> Unsat
                 | _ -> try_forever (List.map (fun p -> p.term) eff.req)
+      else
+        match S.check_sat_assuming [ reach_sexp] with
+        | Solver.Unsat -> Unreach
+        | _ ->
+            match S.check_sat_assuming [ reach_sexp; not_req] with
+            | Solver.Sat -> Sat
+            | Solver.Unsat -> Unsat
+            | _ -> try_forever (List.map (fun p -> p.term) eff.req)
     in
 
     let ms = (Unix.gettimeofday () -. start_time) *. 1000.0 in
@@ -379,7 +387,7 @@ let generate_query_dependency_dot queries (results_map: results_map) =
   Buffer.add_string buffer "}\n";
   Buffer.contents buffer
 
-let run ?(topo=false) solver queries =
+let run ~spec ?(topo=false) solver queries =
   (* Remove queries that can't help to show exits *)
   let filtered = can_reach_exit queries in
 
@@ -391,7 +399,7 @@ let run ?(topo=false) solver queries =
       let topo_effects = Data_structures.query_topo_sort filtered in
       debug_printf "Solving %d queries (topo mode)\n" (List.length topo_effects);
       try
-        topo_loop_solve solver count topo_effects results;
+        topo_loop_solve ~spec solver count topo_effects results;
         Solver.Unsat
       with
       | Sat_outcome -> Solver.Sat

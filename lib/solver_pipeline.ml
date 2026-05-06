@@ -9,7 +9,7 @@ let cvc5_config = ("tlimit-per", "cvc5", ["cvc5"; "--incremental"; "--repeat-sim
 let bw_config   = ("time-limit-per", "bitwuzla", ["bitwuzla"; "--rewrite-no-mul"; "--abstraction-bv-size"; "16"])
 
 (** Run the incremental solver from an initial unconfigured state *)
-let run (module S : Solver.Solver) state timeout_ms ~topo =
+let run (module S : Solver.Solver) state timeout_ms ~topo ~spec =
   S.set_logic "QF_UFBV";
   S.set_timeout timeout_ms;
   emit_fun_defs (module S) state.funs;
@@ -20,12 +20,12 @@ let run (module S : Solver.Solver) state timeout_ms ~topo =
   emit_assignment_assertions (module S) state.source;
   emit_assignment_assertions (module S) state.target;
   emit_arbitrary_assertions (module S) state;
-  let res = Effect_optimizer.run ~topo (module S) state.effects in
+  let res = Effect_optimizer.run ~topo ~spec (module S) state.effects in
   S.close ();
   res
 
 (** Main function for solving process *)
-let solve state ~timeout_ms ~use_async ~resolution_ms ~enable_z3 ~enable_cvc5 ~enable_bitwuzla ~topo =
+let solve state ~timeout_ms ~use_async ~resolution_ms ~enable_z3 ~enable_cvc5 ~enable_bitwuzla ~topo ~spec =
   let configs = [] in
   let configs = if enable_z3       then z3_config   :: configs else configs in
   let configs = if enable_bitwuzla then bw_config   :: configs else configs in
@@ -36,4 +36,4 @@ let solve state ~timeout_ms ~use_async ~resolution_ms ~enable_z3 ~enable_cvc5 ~e
   | _ when use_async -> Async_solver.make resolution_ms configs
   | _ -> Round_robin.make resolution_ms (List.map Smtlib_solver.make configs)
   in
-  get_time (fun _ -> run solver state timeout_ms ~topo)
+  get_time (fun _ -> run solver state timeout_ms ~topo ~spec)

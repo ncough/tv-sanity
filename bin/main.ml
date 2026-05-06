@@ -41,7 +41,7 @@ let cvc5_batch timeout_ms filename =
 
 
 (** Parse and process a single SMT-LIB2 file with main pipeline *)
-let process_file filename ~timeout_ms ~use_async ~resolution_ms ~enable_z3 ~enable_cvc5 ~enable_bitwuzla ~fallback_batch  ~topo =
+let process_file filename ~timeout_ms ~use_async ~resolution_ms ~enable_z3 ~enable_cvc5 ~enable_bitwuzla ~fallback_batch  ~topo ~spec =
   try
     let state = parse_file filename in
     let base_filename = Filename.remove_extension filename in
@@ -52,7 +52,7 @@ let process_file filename ~timeout_ms ~use_async ~resolution_ms ~enable_z3 ~enab
     (* Apply copy/constant propagation *)
     let state = Tv_sanity.Copy_prop.transform_state state in
 
-    let (r,ms) = solve state ~timeout_ms ~use_async ~resolution_ms ~enable_z3 ~enable_cvc5 ~enable_bitwuzla ~topo in
+    let (r,ms) = solve state ~timeout_ms ~use_async ~resolution_ms ~enable_z3 ~enable_cvc5 ~enable_bitwuzla ~topo ~spec in
     if is_debug_enabled () then
       Printf.printf "%s in %.2fms\n" (pp_r r) ms
     ;
@@ -83,11 +83,12 @@ let () =
   let enable_cvc5 = ref true in
   let enable_bitwuzla = ref true in
   let topo = ref true in
+  let spec = ref true in
   let version = ref false in
   let fallback_batch = ref false in
 
   (* Argument specification *)
-  let spec = [
+  let argspec = [
     ("--debug", Arg.Unit (fun () -> set_debug_mode true),
      " Enable debug mode with debug directory creation");
     ("--timeout", Arg.Int (fun t -> timeout_ms := t),
@@ -106,13 +107,15 @@ let () =
      " On sat try again with cvc5 batch solver");
     ("--dom", Arg.Clear topo,
      " Use dominator walk");
+    ("--no-spec", Arg.Clear spec,
+     " Disable speculative path-insensitivity");
     ("--version", Arg.Set version,
      " Dump version information");
   ] in
 
   let usage_msg = Printf.sprintf "Usage: %s [options] <smt2_file>\nOptions:" Sys.argv.(0) in
   let anon_fun filename = input_files := filename :: !input_files in
-  Arg.parse spec anon_fun usage_msg;
+  Arg.parse argspec anon_fun usage_msg;
 
   if !version then begin
     List.iter (fun cmd ->
@@ -128,7 +131,7 @@ let () =
   match List.rev !input_files with
   | [] ->
       Printf.printf "Error: No input file specified\n";
-      Arg.usage spec usage_msg;
+      Arg.usage argspec usage_msg;
       exit 1
   | [filename] ->
       let timeout_ms = !timeout_ms in
@@ -139,10 +142,11 @@ let () =
       let enable_bitwuzla = !enable_bitwuzla in
       let fallback_batch = !fallback_batch in
       let topo = !topo in
+      let spec = !spec in
       let code = process_file filename
-        ~timeout_ms ~use_async ~resolution_ms ~enable_z3 ~enable_cvc5 ~enable_bitwuzla ~fallback_batch  ~topo in
+        ~timeout_ms ~use_async ~resolution_ms ~enable_z3 ~enable_cvc5 ~enable_bitwuzla ~fallback_batch  ~topo ~spec in
       exit code
   | _ ->
       Printf.printf "Error: Too many input files specified\n";
-      Arg.usage spec usage_msg;
+      Arg.usage argspec usage_msg;
       exit 1
